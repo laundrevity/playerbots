@@ -132,6 +132,11 @@ namespace ai
                 return false;
             }
 
+            // in arena, stealth proactively (openers matter; enemies start out of
+            // the range-based checks below behind the starting gates)
+            if (bot->InArena())
+                return true;
+
             Unit* target = AI_VALUE(Unit*, "enemy player target");
             if (!target)
             {
