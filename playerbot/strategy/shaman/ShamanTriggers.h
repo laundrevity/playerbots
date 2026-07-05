@@ -15,7 +15,7 @@ namespace ai
             if (AI_VALUE2(bool, "has totem", "tremor totem"))
                 return false;
 
-            std::list<ObjectGuid> enemies = AI_VALUE(std::list<ObjectGuid>, "enemy players");
+            std::list<ObjectGuid> enemies = AI_VALUE(std::list<ObjectGuid>, "enemy player targets");
             for (auto& guid : enemies)
             {
                 Unit* e = ai->GetUnit(guid);
