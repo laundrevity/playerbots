@@ -648,6 +648,44 @@ namespace ai
         virtual uint32 GetItemId() override { return 5634; }
     };
 
+    class UsePvpTrinketAction : public UseItemIdAction
+    {
+    public:
+        UsePvpTrinketAction(PlayerbotAI* ai) : UseItemIdAction(ai, "use pvp trinket") {}
+
+        virtual bool isUseful() override
+        {
+            if (!UseItemIdAction::isUseful())
+                return false;
+
+            // only worth pressing while hard-CC'd
+            return bot->HasAuraType(SPELL_AURA_MOD_STUN) ||
+                   bot->HasAuraType(SPELL_AURA_MOD_FEAR) ||
+                   bot->HasAuraType(SPELL_AURA_MOD_CHARM) ||
+                   bot->HasAuraType(SPELL_AURA_MOD_CONFUSE);
+        }
+
+        virtual uint32 GetItemId() override
+        {
+            // find an equipped trinket whose use effect is PvP Trinket (42292)
+            for (uint8 slot = EQUIPMENT_SLOT_TRINKET1; slot <= EQUIPMENT_SLOT_TRINKET2; ++slot)
+            {
+                Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+                if (!item)
+                    continue;
+
+                ItemPrototype const* proto = item->GetProto();
+                for (int i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+                    if (proto->Spells[i].SpellId == 42292)
+                        return proto->ItemId;
+            }
+            return 0;
+        }
+
+        // Used when this action is executed as a reaction
+        bool ShouldReactionInterruptMovement() const override { return true; }
+    };
+
     class DrinkAction : public UseAction
     {
     public:

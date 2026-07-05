@@ -1088,6 +1088,21 @@ namespace ai
         }
     };
 
+    // any hard loss of control a pvp trinket can break
+    class CrowdControlledTrigger : public Trigger
+    {
+    public:
+        CrowdControlledTrigger(PlayerbotAI* ai) : Trigger(ai, "cc'd", 1) {}
+
+        bool IsActive() override
+        {
+            return bot->HasAuraType(SPELL_AURA_MOD_STUN) ||
+                   bot->HasAuraType(SPELL_AURA_MOD_FEAR) ||
+                   bot->HasAuraType(SPELL_AURA_MOD_CHARM) ||
+                   bot->HasAuraType(SPELL_AURA_MOD_CONFUSE);
+        }
+    };
+
     class StoneformTrigger : public Trigger
     {
     public:

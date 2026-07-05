@@ -248,6 +248,7 @@ namespace ai
             creators["rocket boots"] = [](PlayerbotAI* ai) { return new UseRocketBootsAction(ai); };
             creators["fire protection potion"] = [](PlayerbotAI* ai) { return new UseFireProtectionPotionAction(ai); };
             creators["free action potion"] = [](PlayerbotAI* ai) { return new UseFreeActionPotionAction(ai); };
+            creators["use pvp trinket"] = [](PlayerbotAI* ai) { return new UsePvpTrinketAction(ai); };
             creators["use consumable"] = [](PlayerbotAI* ai) { return new UseConsumableAction(ai); };
             creators["anti-venom"] = [](PlayerbotAI* ai) { return new UseAntiVenomAction(ai); };
 

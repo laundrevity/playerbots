@@ -205,6 +205,7 @@ namespace ai
             creators["feared"] = [](PlayerbotAI* ai) { return new FearedTrigger(ai); };
             creators["charmed"] = [](PlayerbotAI* ai) { return new CharmedTrigger(ai); };
             creators["stunned"] = [](PlayerbotAI* ai) { return new StunnedTrigger(ai); };
+            creators["cc'd"] = [](PlayerbotAI* ai) { return new CrowdControlledTrigger(ai); };
 
             // move to/enter dark portal if near
             creators["near dark portal"] = [](PlayerbotAI* ai) { return new NearDarkPortalTrigger(ai); };
