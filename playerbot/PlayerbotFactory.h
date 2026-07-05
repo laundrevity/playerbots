@@ -47,6 +47,9 @@ class PlayerbotFactory
 public:
     PlayerbotFactory(Player* bot, uint32 level, uint32 itemQuality = 0) : level(level), itemQuality(itemQuality), bot(bot), ai(bot->GetPlayerbotAI()) {}
 
+    // when set, InitEquipment skips items below this item level (0 = no minimum)
+    void SetMinItemLevel(uint32 value) { minItemLevel = value; }
+
     static ObjectGuid GetRandomBot();
     static void Init();
     void Refresh();
@@ -126,6 +129,7 @@ private:
 private:
     uint32 level;
     uint32 itemQuality;
+    uint32 minItemLevel = 0;
     static uint32 tradeSkills[];
     static TaxiNodeLevelContainer overworldTaxiNodeLevelsA;
     static TaxiNodeLevelContainer overworldTaxiNodeLevelsH;

@@ -3363,6 +3363,10 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
                     if (proto->ItemLevel > maxItemLevel)
                         continue;
 
+                    // optional floor: skip low item-level pieces (e.g. old-world epics on a level 70)
+                    if (minItemLevel && proto->ItemLevel < minItemLevel)
+                        continue;
+
                     // do not use items that required level is too low compared to bot's level
                     uint32 reqLevel = sRandomItemMgr.GetMinLevelFromCache(newItemId);
                     if (reqLevel && proto->Quality < ITEM_QUALITY_LEGENDARY && abs((int)bot->GetLevel() - (int)reqLevel) > (int)sPlayerbotAIConfig.randomGearMaxDiff)

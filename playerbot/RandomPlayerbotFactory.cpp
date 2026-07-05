@@ -1186,6 +1186,23 @@ namespace
         { { { CLASS_ROGUE,   false }, { CLASS_ROGUE,   false } },  3 },
     };
 
+    void GearArenaBot(Player* bot)
+    {
+        // arena opponents must threaten a well-geared real player: epic gear + gems,
+        // floored at ilvl 115 so old-world epics don't dilute the pool (~S3/T5 level)
+        PlayerbotFactory factory(bot, bot->GetLevel(), ITEM_QUALITY_EPIC);
+        factory.SetMinItemLevel(115);
+        factory.EquipGear();
+
+        // replace trinket 1 with the faction pvp medallion so "use pvp trinket" can break cc
+        uint32 medallion = (bot->GetTeam() == ALLIANCE) ? 37864 : 37865;
+        if (!bot->HasItemCount(medallion, 1))
+        {
+            bot->DestroyItem(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_TRINKET1, true);
+            bot->StoreNewItemInBestSlots(medallion, 1);
+        }
+    }
+
     bool BotFitsArenaSlot(Player* bot, ArenaCompSlot const& slot)
     {
         if (bot->getClass() != slot.cls)
@@ -1448,12 +1465,15 @@ void RandomPlayerbotFactory::CreateRandomArenaTeams()
         sObjectMgr.AddArenaTeam(arenateam);
         sPlayerbotAIConfig.randomBotArenaTeams.push_back(arenateam->GetId());
 
+        GearArenaBot(player);
+
         // 2v2: the comp-matched partner joins directly
         if (!compMember.IsEmpty())
         {
             if (Player* member = sObjectMgr.GetPlayer(compMember))
             {
                 arenateam->AddMember(member->GetObjectGuid());
+                GearArenaBot(member);
                 sLog.outBasic("Bot #%d %s:%d <%s>: added to random Arena %s team - %s (comp match)", member->GetGUIDLow(), member->GetTeam() == ALLIANCE ? "A" : "H", member->GetLevel(), member->GetName(), arenaTypeName.c_str(), arenateam->GetName().c_str());
             }
         }
@@ -1477,6 +1497,7 @@ void RandomPlayerbotFactory::CreateRandomArenaTeams()
                 continue;
 
             arenateam->AddMember(member->GetObjectGuid());
+            GearArenaBot(member);
             sLog.outBasic("Bot #%d %s:%d <%s>: added to random Arena %s team - %s", member->GetGUIDLow(), member->GetTeam() == ALLIANCE ? "A" : "H", member->GetLevel(), member->GetName(), arenaTypeName.c_str(), arenateam->GetName().c_str());
 
             /*if (player->GetArenaTeamIdFromDB(possibleMember, type))
