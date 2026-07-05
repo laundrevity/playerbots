@@ -1388,8 +1388,9 @@ bool BGStatusAction::Execute(Event& event)
             WorldPacket leave(CMSG_LEAVE_BATTLEFIELD);
             leave << uint8(0) << uint8(0) << uint32(0) << uint16(0);
             bot->GetSession()->HandleLeaveBattlefieldOpcode(leave);
-            //Queue the event again to try to join next tick.
-            //ai->HandleBotOutgoingPacket(event.getPacket());
+            // Queue the event again to try to join next tick — otherwise the
+            // invite is silently dropped and the team fights a man down.
+            ai->HandleBotOutgoingPacket(event.getPacket());
             return true;
         }
 
@@ -1398,10 +1399,10 @@ bool BGStatusAction::Execute(Event& event)
 #else
         sLog.outDetail("Bot #%d %s:%d <%s> joined %s - %s", bot->GetGUIDLow(), bot->GetTeam() == ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName(), isArena ? "Arena" : "BG", _bgType.c_str());
 
-        if (bgTypeId == BATTLEGROUND_AA)
-        {
-            return false;
-        }
+        // BATTLEGROUND_AA is fine to port to on this core: HandleBattlefieldPortOpcode
+        // validates it against BattlemasterList.dbc and resolves the queue from the
+        // arena type. The old early-return here made group members silently ignore
+        // arena invites (2v1 matches) whenever their invite decoded as AA.
 #endif
         bot->GetSession()->HandleBattlefieldPortOpcode(packet);
 
