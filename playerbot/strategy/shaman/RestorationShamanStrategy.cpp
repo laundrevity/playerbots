@@ -839,6 +839,13 @@ void RestorationShamanTotemsStrategy::InitCombatTriggers(std::list<TriggerNode*>
         "water totem",
         NextAction::array(0, new NextAction("healing stream totem", ACTION_HIGH), NULL)));
 
+    // prefer Tremor Totem when a fear-capable enemy (warlock/priest/warrior) is up;
+    // higher priority than strength of earth. Once tremor is down the base earth
+    // totem trigger is satisfied and won't overwrite it.
+    triggers.push_back(new TriggerNode(
+        "tremor needed",
+        NextAction::array(0, new NextAction("tremor totem", ACTION_HIGH + 1), NULL)));
+
     triggers.push_back(new TriggerNode(
         "earth totem",
         NextAction::array(0, new NextAction("strength of earth totem", ACTION_HIGH), NULL)));
@@ -1348,6 +1355,13 @@ void RestorationShamanTotemsStrategy::InitCombatTriggers(std::list<TriggerNode*>
     triggers.push_back(new TriggerNode(
         "water totem",
         NextAction::array(0, new NextAction("healing stream totem", ACTION_HIGH), NULL)));
+
+    // prefer Tremor Totem when a fear-capable enemy (warlock/priest/warrior) is up;
+    // higher priority than strength of earth. Once tremor is down the base earth
+    // totem trigger is satisfied and won't overwrite it.
+    triggers.push_back(new TriggerNode(
+        "tremor needed",
+        NextAction::array(0, new NextAction("tremor totem", ACTION_HIGH + 1), NULL)));
 
     triggers.push_back(new TriggerNode(
         "earth totem",

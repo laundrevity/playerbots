@@ -3,7 +3,33 @@
 
 namespace ai
 {
-    class ShamanWeaponTrigger : public BuffTrigger 
+    // Active when a fear-capable enemy player (Warlock/Priest/Warrior) is present
+    // and Tremor Totem is not already down — used to prefer Tremor in the earth slot.
+    class TremorNeededTrigger : public Trigger
+    {
+    public:
+        TremorNeededTrigger(PlayerbotAI* ai) : Trigger(ai, "tremor needed", 2) {}
+
+        bool IsActive() override
+        {
+            if (AI_VALUE2(bool, "has totem", "tremor totem"))
+                return false;
+
+            std::list<ObjectGuid> enemies = AI_VALUE(std::list<ObjectGuid>, "enemy players");
+            for (auto& guid : enemies)
+            {
+                Unit* e = ai->GetUnit(guid);
+                if (!e || !e->IsPlayer())
+                    continue;
+                uint8 cls = e->getClass();
+                if (cls == CLASS_WARLOCK || cls == CLASS_PRIEST || cls == CLASS_WARRIOR)
+                    return true;
+            }
+            return false;
+        }
+    };
+
+    class ShamanWeaponTrigger : public BuffTrigger
     {
     public:
         ShamanWeaponTrigger(PlayerbotAI* ai) : BuffTrigger(ai, "rockbiter weapon") {}

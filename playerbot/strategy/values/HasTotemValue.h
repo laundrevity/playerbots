@@ -32,7 +32,23 @@ namespace ai
                 if (!totemOwner)
                     continue;
 
-                if (totemOwner == bot) return true; // Found our own totem in range
+                if (totemOwner == bot)
+                {
+                    // When actively supporting a real player master (arena/follow),
+                    // the totem is only "ours" if it still covers the master — otherwise
+                    // report false so the totem trigger re-fires and re-drops in range.
+                    if (ai->HasRealPlayerMaster())
+                    {
+                        Player* master = ai->GetMaster();
+                        if (master && master != bot && master->IsInWorld() &&
+                            master->GetMapId() == bot->GetMapId() &&
+                            sServerFacade.GetDistance2d(master, totem) > 20.0f)
+                        {
+                            continue; // totem too far from the unit we're supporting
+                        }
+                    }
+                    return true; // Found our own totem in range
+                }
 
                 const Group* botGroup = bot->GetGroup();
                 if (!botGroup) continue;
