@@ -172,6 +172,12 @@ namespace ai
         CastGroundingTotemAction(PlayerbotAI* ai) : CastTotemAction(ai, "grounding totem") {}
     };
 
+    class CastShamanNaturesSwiftnessAction : public CastBuffSpellAction
+    {
+    public:
+        CastShamanNaturesSwiftnessAction(PlayerbotAI* ai) : CastBuffSpellAction(ai, "nature's swiftness") {}
+    };
+
     class CastEarthbindTotemAction : public CastTotemAction
     {
     public:

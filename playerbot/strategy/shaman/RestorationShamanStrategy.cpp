@@ -62,6 +62,15 @@ void RestorationShamanStrategy::InitCombatTriggers(std::list<TriggerNode*> &trig
         "low mana",
         NextAction::array(0, new NextAction("mana tide totem", ACTION_EMERGENCY), NULL)));
 
+    // pop Nature's Swiftness first so the emergency Healing Wave below is instant
+    triggers.push_back(new TriggerNode(
+        "critical health",
+        NextAction::array(0, new NextAction("nature's swiftness", ACTION_CRITICAL_HEAL + 2), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "party member critical health",
+        NextAction::array(0, new NextAction("nature's swiftness", ACTION_CRITICAL_HEAL + 2), NULL)));
+
     triggers.push_back(new TriggerNode(
         "critical health",
         NextAction::array(0, new NextAction("healing wave", ACTION_CRITICAL_HEAL + 1), NULL)));
@@ -352,6 +361,12 @@ void RestorationShamanTotemsStrategy::InitCombatTriggers(std::list<TriggerNode*>
 {
     ShamanTotemsStrategy::InitCombatTriggers(triggers);
 
+    // prefer Grounding Totem in the air slot when an enemy caster player is up —
+    // it eats a full cast (poly/fear/bolt) and dies, so the trigger re-fires
+    triggers.push_back(new TriggerNode(
+        "grounding needed",
+        NextAction::array(0, new NextAction("grounding totem", ACTION_HIGH + 2), NULL)));
+
     triggers.push_back(new TriggerNode(
         "air totem",
         NextAction::array(0, new NextAction("windfury totem", ACTION_HIGH + 1), NULL)));
@@ -536,6 +551,15 @@ void RestorationShamanStrategy::InitCombatTriggers(std::list<TriggerNode*>& trig
     triggers.push_back(new TriggerNode(
         "low mana",
         NextAction::array(0, new NextAction("mana tide totem", ACTION_EMERGENCY), NULL)));
+
+    // pop Nature's Swiftness first so the emergency Healing Wave below is instant
+    triggers.push_back(new TriggerNode(
+        "critical health",
+        NextAction::array(0, new NextAction("nature's swiftness", ACTION_CRITICAL_HEAL + 2), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "party member critical health",
+        NextAction::array(0, new NextAction("nature's swiftness", ACTION_CRITICAL_HEAL + 2), NULL)));
 
     triggers.push_back(new TriggerNode(
         "critical health",
@@ -826,6 +850,12 @@ void RestorationShamanCureRaidStrategy::InitNonCombatTriggers(std::list<TriggerN
 void RestorationShamanTotemsStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
 {
     ShamanTotemsStrategy::InitCombatTriggers(triggers);
+
+    // prefer Grounding Totem in the air slot when an enemy caster player is up —
+    // it eats a full cast (poly/fear/bolt) and dies, so the trigger re-fires
+    triggers.push_back(new TriggerNode(
+        "grounding needed",
+        NextAction::array(0, new NextAction("grounding totem", ACTION_HIGH + 2), NULL)));
 
     triggers.push_back(new TriggerNode(
         "air totem",
@@ -1054,6 +1084,15 @@ void RestorationShamanStrategy::InitCombatTriggers(std::list<TriggerNode*>& trig
         "low mana",
         NextAction::array(0, new NextAction("mana tide totem", ACTION_EMERGENCY), NULL)));
 
+    // pop Nature's Swiftness first so the emergency Healing Wave below is instant
+    triggers.push_back(new TriggerNode(
+        "critical health",
+        NextAction::array(0, new NextAction("nature's swiftness", ACTION_CRITICAL_HEAL + 2), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "party member critical health",
+        NextAction::array(0, new NextAction("nature's swiftness", ACTION_CRITICAL_HEAL + 2), NULL)));
+
     triggers.push_back(new TriggerNode(
         "critical health",
         NextAction::array(0, new NextAction("healing wave", ACTION_CRITICAL_HEAL + 1), NULL)));
@@ -1343,6 +1382,12 @@ void RestorationShamanCureRaidStrategy::InitNonCombatTriggers(std::list<TriggerN
 void RestorationShamanTotemsStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
 {
     ShamanTotemsStrategy::InitCombatTriggers(triggers);
+
+    // prefer Grounding Totem in the air slot when an enemy caster player is up —
+    // it eats a full cast (poly/fear/bolt) and dies, so the trigger re-fires
+    triggers.push_back(new TriggerNode(
+        "grounding needed",
+        NextAction::array(0, new NextAction("grounding totem", ACTION_HIGH + 2), NULL)));
 
     triggers.push_back(new TriggerNode(
         "air totem",

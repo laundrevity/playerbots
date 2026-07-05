@@ -29,6 +29,32 @@ namespace ai
         }
     };
 
+    // Active when an enemy caster player is present and Grounding Totem is not
+    // already down — used to prefer Grounding in the air slot for pvp.
+    class GroundingNeededTrigger : public Trigger
+    {
+    public:
+        GroundingNeededTrigger(PlayerbotAI* ai) : Trigger(ai, "grounding needed", 2) {}
+
+        bool IsActive() override
+        {
+            if (AI_VALUE2(bool, "has totem", "grounding totem"))
+                return false;
+
+            std::list<ObjectGuid> enemies = AI_VALUE(std::list<ObjectGuid>, "enemy player targets");
+            for (auto& guid : enemies)
+            {
+                Unit* e = ai->GetUnit(guid);
+                if (!e || !e->IsPlayer())
+                    continue;
+                uint8 cls = e->getClass();
+                if (cls == CLASS_MAGE || cls == CLASS_WARLOCK || cls == CLASS_PRIEST || cls == CLASS_SHAMAN || cls == CLASS_DRUID)
+                    return true;
+            }
+            return false;
+        }
+    };
+
     class ShamanWeaponTrigger : public BuffTrigger
     {
     public:

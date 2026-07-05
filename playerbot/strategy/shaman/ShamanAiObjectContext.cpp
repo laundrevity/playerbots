@@ -282,6 +282,7 @@ namespace ai
                 creators["fire totem aoe"] = [](PlayerbotAI* ai) { return new FireTotemAoeTrigger(ai); };
                 creators["earth totem"] = [](PlayerbotAI* ai) { return new EarthTotemTrigger(ai); };
                 creators["tremor needed"] = [](PlayerbotAI* ai) { return new TremorNeededTrigger(ai); };
+                creators["grounding needed"] = [](PlayerbotAI* ai) { return new GroundingNeededTrigger(ai); };
                 creators["water totem"] = [](PlayerbotAI* ai) { return new WaterTotemTrigger(ai); };
                 creators["air totem"] = [](PlayerbotAI* ai) { return new AirTotemTrigger(ai); };
                 creators["call of the elements"] = [](PlayerbotAI* ai) { return new TotemsAreNotSummonedTrigger(ai); };
@@ -310,6 +311,7 @@ namespace ai
                 creators["stoneskin totem"] = [](PlayerbotAI* ai) { return new CastStoneskinTotemAction(ai); };
                 creators["stoneclaw totem"] = [](PlayerbotAI* ai) { return new CastStoneclawTotemAction(ai); };
                 creators["grounding totem"] = [](PlayerbotAI* ai) { return new CastGroundingTotemAction(ai); };
+                creators["nature's swiftness"] = [](PlayerbotAI* ai) { return new CastShamanNaturesSwiftnessAction(ai); };
                 creators["grace of air totem"] = [](PlayerbotAI* ai) { return new CastGraceOfAirTotemAction(ai); };
                 creators["windwall totem"] = [](PlayerbotAI* ai) { return new CastWindwallTotemAction(ai); };
                 creators["mana spring totem"] = [](PlayerbotAI* ai) { return new CastManaSpringTotemAction(ai); };
