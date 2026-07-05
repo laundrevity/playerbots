@@ -896,6 +896,12 @@ void RestorationShamanBuffStrategy::InitCombatTriggers(std::list<TriggerNode*>& 
     triggers.push_back(new TriggerNode(
         "water shield",
         NextAction::array(0, new NextAction("water shield", ACTION_HIGH), NULL)));
+
+    // keep Earth Shield on party members (real players never match the
+    // tank-only trigger; the on-party action skips targets that have it)
+    triggers.push_back(new TriggerNode(
+        "very often",
+        NextAction::array(0, new NextAction("earth shield on party", ACTION_HIGH - 1), NULL)));
 }
 
 void RestorationShamanBuffStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
@@ -905,6 +911,11 @@ void RestorationShamanBuffStrategy::InitNonCombatTriggers(std::list<TriggerNode*
     triggers.push_back(new TriggerNode(
         "water shield",
         NextAction::array(0, new NextAction("water shield", ACTION_NORMAL), NULL)));
+
+    // pre-shield party members out of combat as well
+    triggers.push_back(new TriggerNode(
+        "very often",
+        NextAction::array(0, new NextAction("earth shield on party", ACTION_NORMAL - 1), NULL)));
 }
 
 void RestorationShamanBuffPveStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
@@ -955,6 +966,12 @@ void RestorationShamanBuffRaidStrategy::InitCombatTriggers(std::list<TriggerNode
     triggers.push_back(new TriggerNode(
         "earth shield on party tank",
         NextAction::array(0, new NextAction("earth shield on party tank", ACTION_HIGH), NULL)));
+
+    // also keep Earth Shield on non-tank party members (real players in arena
+    // parties are classified by talent tree and never match the tank trigger)
+    triggers.push_back(new TriggerNode(
+        "very often",
+        NextAction::array(0, new NextAction("earth shield on party", ACTION_HIGH - 1), NULL)));
 }
 
 void RestorationShamanBuffRaidStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
@@ -1438,6 +1455,12 @@ void RestorationShamanBuffRaidStrategy::InitCombatTriggers(std::list<TriggerNode
     triggers.push_back(new TriggerNode(
         "earth shield on party tank",
         NextAction::array(0, new NextAction("earth shield on party tank", ACTION_HIGH), NULL)));
+
+    // also keep Earth Shield on non-tank party members (real players in arena
+    // parties are classified by talent tree and never match the tank trigger)
+    triggers.push_back(new TriggerNode(
+        "very often",
+        NextAction::array(0, new NextAction("earth shield on party", ACTION_HIGH - 1), NULL)));
 }
 
 void RestorationShamanBuffRaidStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
