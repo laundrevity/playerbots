@@ -4885,11 +4885,17 @@ bool ArenaTactics::Execute(Event& event)
         if (sBattleGroundMgr.IsArenaType(bg->GetTypeId()))
 #endif
         {
-            ai->ResetStrategies(false);
-            ai->SetMaster(NULL);
+            // never sever a real player's partner from its master mid-arena —
+            // it breaks follow/assist for the whole match
+            if (!ai->HasRealPlayerMaster())
+            {
+                ai->ResetStrategies(false);
+                ai->SetMaster(NULL);
+            }
         }
 
-    if (!bot->IsInCombat())
+    // a bot with a real master follows the master's lead instead of wandering to center
+    if (!bot->IsInCombat() && !ai->HasRealPlayerMaster())
         return moveToCenter(bg);
 #endif
     return true;
