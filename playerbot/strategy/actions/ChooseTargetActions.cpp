@@ -133,6 +133,18 @@ bool SelectNewTargetAction::Execute(Event& event)
     // Check if there is any enemy targets available to attack
     if (AI_VALUE(bool, "has attackers"))
     {
+        // a real player's raid-target mark (skull) outranks the generic pvp pick:
+        // honor the master's kill call before choosing our own enemy player
+        if (ai->HasRealPlayerMaster() && ai->HasStrategy("dps assist", BotState::BOT_STATE_NON_COMBAT))
+        {
+            Unit* rti = AI_VALUE(Unit*, "rti target");
+            if (rti && rti->IsAlive() && rti->IsPlayer())
+            {
+                moreAttackers = true;
+                return ai->DoSpecificAction("dps assist", event, true);
+            }
+        }
+
         if (ai->HasStrategy("pvp", BotState::BOT_STATE_COMBAT) ||
             ai->HasStrategy("duel", BotState::BOT_STATE_COMBAT))
         {
