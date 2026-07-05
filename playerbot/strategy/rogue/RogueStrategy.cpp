@@ -841,6 +841,12 @@ void RogueStealthStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
 
 void RogueStealthStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
 {
+    // enter stealth out of combat too — without this the trigger only exists in
+    // the combat set and arena openers never happen (prep room is non-combat)
+    triggers.push_back(new TriggerNode(
+        "stealth",
+        NextAction::array(0, new NextAction("stealth", ACTION_HIGH + 1), NULL)));
+
     triggers.push_back(new TriggerNode(
         "no stealth",
         NextAction::array(0, new NextAction("check stealth", ACTION_HIGH), NULL)));
@@ -1281,6 +1287,12 @@ void RogueStealthStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
 
 void RogueStealthStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
 {
+    // enter stealth out of combat too — without this the trigger only exists in
+    // the combat set and arena openers never happen (prep room is non-combat)
+    triggers.push_back(new TriggerNode(
+        "stealth",
+        NextAction::array(0, new NextAction("stealth", ACTION_HIGH + 1), NULL)));
+
     triggers.push_back(new TriggerNode(
         "no stealth",
         NextAction::array(0, new NextAction("check stealth", ACTION_HIGH), NULL)));
