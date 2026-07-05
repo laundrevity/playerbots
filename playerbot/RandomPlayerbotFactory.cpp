@@ -7,6 +7,7 @@
 #include "Globals/ObjectMgr.h"
 #include "Database/DatabaseEnv.h"
 #include "PlayerbotAI.h"
+#include "AiFactory.h"
 #include "Entities/Player.h"
 #include "RandomPlayerbotFactory.h"
 #include "SystemConfig.h"
@@ -1160,6 +1161,47 @@ std::string RandomPlayerbotFactory::CreateRandomGuildName()
 }
 
 #ifndef MANGOSBOT_ZERO
+namespace
+{
+    struct ArenaCompSlot { uint8 cls; bool healer; };
+    struct ArenaComp { ArenaCompSlot slots[2]; uint32 weight; };
+
+    // real TBC 2v2 ladder comps, weighted by how common they should be on the ladder;
+    // random class pairing produces nonsense teams (mage/warlock, warlock/hunter)
+    ArenaComp const arena2v2Comps[] =
+    {
+        { { { CLASS_ROGUE,   false }, { CLASS_PRIEST,  true  } }, 12 },
+        { { { CLASS_WARRIOR, false }, { CLASS_DRUID,   true  } }, 12 },
+        { { { CLASS_WARLOCK, false }, { CLASS_DRUID,   true  } }, 10 },
+        { { { CLASS_ROGUE,   false }, { CLASS_MAGE,    false } }, 10 },
+        { { { CLASS_MAGE,    false }, { CLASS_PRIEST,  true  } },  8 },
+        { { { CLASS_WARRIOR, false }, { CLASS_PALADIN, true  } },  8 },
+        { { { CLASS_HUNTER,  false }, { CLASS_DRUID,   true  } },  6 },
+        { { { CLASS_WARLOCK, false }, { CLASS_SHAMAN,  true  } },  6 },
+        { { { CLASS_ROGUE,   false }, { CLASS_DRUID,   true  } },  6 },
+        { { { CLASS_WARRIOR, false }, { CLASS_SHAMAN,  true  } },  5 },
+        { { { CLASS_WARLOCK, false }, { CLASS_PRIEST,  true  } },  5 },
+        { { { CLASS_MAGE,    false }, { CLASS_DRUID,   true  } },  4 },
+        { { { CLASS_HUNTER,  false }, { CLASS_PRIEST,  true  } },  4 },
+        { { { CLASS_ROGUE,   false }, { CLASS_ROGUE,   false } },  3 },
+    };
+
+    bool BotFitsArenaSlot(Player* bot, ArenaCompSlot const& slot)
+    {
+        if (bot->getClass() != slot.cls)
+            return false;
+
+        if (PlayerbotAI::IsHeal(bot, false) != slot.healer)
+            return false;
+
+        // don't put tank-specced bots in a dps slot
+        if (!slot.healer && (AiFactory::GetPlayerRoles(bot) & BOT_ROLE_TANK))
+            return false;
+
+        return true;
+    }
+}
+
 void RandomPlayerbotFactory::CreateRandomArenaTeams()
 {
     std::vector<uint32> randomBots;
@@ -1316,6 +1358,67 @@ void RandomPlayerbotFactory::CreateRandomArenaTeams()
         if (player->GetArenaTeamId(ArenaTeam::GetSlotByType(type)))
             continue;
 
+        // for 2v2, discard the randomly drawn captain and instead pick a captain+partner
+        // pair that fits a real comp template
+        ObjectGuid compMember;
+        if (type == ARENA_TYPE_2v2)
+        {
+            uint32 totalWeight = 0;
+            for (auto const& comp : arena2v2Comps)
+                totalWeight += comp.weight;
+
+            uint8 arenaSlot = ArenaTeam::GetSlotByType(type);
+            bool found = false;
+            for (uint32 draw = 0; draw < 15 && !found; ++draw)
+            {
+                int32 roll = irand(1, totalWeight);
+                ArenaComp const* comp = &arena2v2Comps[0];
+                for (auto const& candidate : arena2v2Comps)
+                {
+                    roll -= candidate.weight;
+                    if (roll <= 0)
+                    {
+                        comp = &candidate;
+                        break;
+                    }
+                }
+
+                std::vector<Player*> candidatesA;
+                for (ObjectGuid guid : availableCaptains)
+                    if (Player* bot = sObjectMgr.GetPlayer(guid))
+                        if (!bot->GetArenaTeamId(arenaSlot) && BotFitsArenaSlot(bot, comp->slots[0]))
+                            candidatesA.push_back(bot);
+
+                while (!candidatesA.empty() && !found)
+                {
+                    uint32 idxA = urand(0, candidatesA.size() - 1);
+                    Player* botA = candidatesA[idxA];
+                    candidatesA.erase(candidatesA.begin() + idxA);
+
+                    std::vector<Player*> candidatesB;
+                    for (ObjectGuid guid : availableCaptains)
+                        if (Player* bot = sObjectMgr.GetPlayer(guid))
+                            if (bot != botA && bot->GetTeam() == botA->GetTeam()
+                                && !bot->GetArenaTeamId(arenaSlot) && BotFitsArenaSlot(bot, comp->slots[1]))
+                                candidatesB.push_back(bot);
+
+                    if (candidatesB.empty())
+                        continue;
+
+                    captain = botA->GetObjectGuid();
+                    player = botA;
+                    compMember = candidatesB[urand(0, candidatesB.size() - 1)]->GetObjectGuid();
+                    found = true;
+                }
+            }
+
+            if (!found)
+            {
+                sLog.outBasic("Random Arena 2v2: no online bot pair fits any comp template, skipping this pass");
+                continue;
+            }
+        }
+
         ArenaTeam* arenateam = new ArenaTeam();
         if (!arenateam->Create(player->GetObjectGuid(), type, arenaTeamName))
         {
@@ -1334,6 +1437,16 @@ void RandomPlayerbotFactory::CreateRandomArenaTeams()
         //arenateam->SetStats(STAT_TYPE_WINS_SEASON, urand(arenateam->GetStats().wins_week, arenateam->GetStats().games_season));
         sObjectMgr.AddArenaTeam(arenateam);
         sPlayerbotAIConfig.randomBotArenaTeams.push_back(arenateam->GetId());
+
+        // 2v2: the comp-matched partner joins directly
+        if (!compMember.IsEmpty())
+        {
+            if (Player* member = sObjectMgr.GetPlayer(compMember))
+            {
+                arenateam->AddMember(member->GetObjectGuid());
+                sLog.outBasic("Bot #%d %s:%d <%s>: added to random Arena %s team - %s (comp match)", member->GetGUIDLow(), member->GetTeam() == ALLIANCE ? "A" : "H", member->GetLevel(), member->GetName(), arenaTypeName.c_str(), arenateam->GetName().c_str());
+            }
+        }
 
         for (uint32 i = 0; i < 10; i++)
         {
