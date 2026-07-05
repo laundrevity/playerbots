@@ -1222,15 +1222,25 @@ void RandomPlayerbotFactory::CreateRandomArenaTeams()
     if (sPlayerbotAIConfig.deleteRandomBotArenaTeams && !sRandomPlayerbotMgr.arenaTeamsDeleted)
     {
         sLog.outString("Deleting random bot arena teams...");
-        for (std::vector<uint32>::iterator i = randomBots.begin(); i != randomBots.end(); ++i)
+        // iterate every persisted team, not just captains with a live 'add' event —
+        // stale teams from earlier runs would otherwise survive the wipe forever
+        std::vector<uint32> teamsToDisband;
+        for (auto itr = sObjectMgr.GetArenaTeamMapBegin(); itr != sObjectMgr.GetArenaTeamMapEnd(); ++itr)
         {
-            ObjectGuid captain(HIGHGUID_PLAYER, *i);
-            ArenaTeam* arenateam = sObjectMgr.GetArenaTeamByCaptain(captain);
-            if (arenateam)
-                //sObjectMgr.RemoveArenaTeam(arenateam->GetId());
-                arenateam->Disband(NULL);
+            ArenaTeam* arenateam = itr->second;
+            if (!arenateam)
+                continue;
+
+            uint32 captainAccount = sObjectMgr.GetPlayerAccountIdByGUID(arenateam->GetCaptainGuid());
+            if (captainAccount && sPlayerbotAIConfig.IsInRandomAccountList(captainAccount))
+                teamsToDisband.push_back(arenateam->GetId());
         }
-        sLog.outString("Random bot arena teams deleted");
+
+        for (uint32 teamId : teamsToDisband)
+            if (ArenaTeam* arenateam = sObjectMgr.GetArenaTeamById(teamId))
+                arenateam->Disband(NULL);
+
+        sLog.outString("Random bot arena teams deleted (%u)", uint32(teamsToDisband.size()));
 
         sRandomPlayerbotMgr.arenaTeamsDeleted = true;
     }
@@ -1478,7 +1488,8 @@ void RandomPlayerbotFactory::CreateRandomArenaTeams()
         {
             sLog.outBasic("Random Arena team %s %s: failed to get enough members, deleting...", arenaTypeName.c_str(), arenateam->GetName().c_str());
             arenateam->Disband(nullptr);
-            return;
+            // one unfilled team must not abort the whole creation pass
+            continue;
         }
 
         // set random rating
