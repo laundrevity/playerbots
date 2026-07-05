@@ -114,6 +114,54 @@ Unit* EnemyPlayerValue::Calculate()
 
     Unit* bestEnemyPlayer = nullptr;
     std::list<ObjectGuid> enemyPlayers = AI_VALUE(std::list<ObjectGuid>, "enemy player targets");
+
+#ifndef MANGOSBOT_ZERO
+    if (!enemyPlayers.empty() && bot->InArena())
+    {
+        // arena: play like a real team — train the enemy healer; with no reachable
+        // healer, converge on a teammate's kill target instead of picking independently
+        Unit* healerTarget = nullptr;
+        float healerDistance = std::numeric_limits<float>::max();
+        for (const ObjectGuid& targetGuid : enemyPlayers)
+        {
+            Unit* target = ai->GetUnit(targetGuid);
+            if (!target)
+                continue;
+
+            Player* enemyPlayer = dynamic_cast<Player*>(target);
+            if (!enemyPlayer || !PlayerbotAI::IsHeal(enemyPlayer, false))
+                continue;
+
+            const float distance = target->GetDistance(bot, false);
+            if (distance < healerDistance)
+            {
+                healerDistance = distance;
+                healerTarget = target;
+            }
+        }
+
+        if (healerTarget && healerDistance <= GetMaxAttackDistance(bot))
+            return healerTarget;
+
+        if (Group* group = bot->GetGroup())
+        {
+            for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
+            {
+                Player* member = gref->getSource();
+                if (!member || member == bot || !member->IsAlive())
+                    continue;
+
+                Unit* victim = member->GetVictim();
+                if (!victim || !victim->IsAlive())
+                    continue;
+
+                if (std::find(enemyPlayers.begin(), enemyPlayers.end(), victim->GetObjectGuid()) != enemyPlayers.end())
+                    return victim;
+            }
+        }
+    }
+#endif
+
     if (!enemyPlayers.empty())
     {
         const bool isMelee = !ai->IsRanged(bot);
