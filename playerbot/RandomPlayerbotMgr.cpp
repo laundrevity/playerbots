@@ -1526,9 +1526,11 @@ void RandomPlayerbotMgr::CheckBgQueue()
 #ifdef MANGOSBOT_ONE
             if (ArenaType arenaType = sServerFacade.BgArenaType(queueTypeId))
             {
-                sWorld.GetBGQueue().GetMessager().AddMessage([queueTypeId, playerId = player->GetObjectGuid(), arenaType = arenaType, bracketId = bracketId, tempT = TeamId](BattleGroundQueue* bgQueue)
+                bool isBot = player->GetPlayerbotAI() != nullptr;
+                bool notInvited = !player->IsInvitedForBattleGroundQueueType(queueTypeId) && (!player->InBattleGround() || player->GetBattleGround()->GetTypeId() != sServerFacade.BgTemplateId(queueTypeId));
+                sWorld.GetBGQueue().GetMessager().AddMessage([queueTypeId, playerId = player->GetObjectGuid(), arenaType = arenaType, bracketId = bracketId, tempT = TeamId, isBot, notInvited](BattleGroundQueue* bgQueue)
                     {
-                        uint32 TeamId;
+                        uint32 TeamId = 0;
                         GroupQueueInfo ginfo;
 
                         BattleGroundQueueItem* queueItem = &bgQueue->GetBattleGroundQueue(queueTypeId);
@@ -1564,21 +1566,41 @@ void RandomPlayerbotMgr::CheckBgQueue()
                         }
                         sRandomPlayerbotMgr.ArenaBots[queueTypeId][bracketId][TeamId][tempT]++;
 
+                        // arena entries use [0]=skirmish/[1]=rated as third index in the
+                        // shared arrays; rated-ness is only known here on the queue thread
+                        if (isBot)
+                            sRandomPlayerbotMgr.BgBots[queueTypeId][bracketId][TeamId]++;
+                        else
+                            sRandomPlayerbotMgr.BgPlayers[queueTypeId][bracketId][TeamId]++;
+                        if (notInvited)
+                            sRandomPlayerbotMgr.NeedBots[queueTypeId][bracketId][TeamId] = true;
                     }
                 );
             }
-#endif
+            if (!sServerFacade.BgArenaType(queueTypeId))
+            {
+                if (player->GetPlayerbotAI())
+                    BgBots[queueTypeId][bracketId][TeamId]++;
+                else
+                    BgPlayers[queueTypeId][bracketId][TeamId]++;
+            }
+#else
             if (player->GetPlayerbotAI())
                 BgBots[queueTypeId][bracketId][TeamId]++;
             else
                 BgPlayers[queueTypeId][bracketId][TeamId]++;
+#endif
 
             if (!player->IsInvitedForBattleGroundQueueType(queueTypeId) && (!player->InBattleGround() || player->GetBattleGround()->GetTypeId() != sServerFacade.BgTemplateId(queueTypeId)))
             {
 #ifndef MANGOSBOT_ZERO
                 if (ArenaType arenaType = sServerFacade.BgArenaType(queueTypeId))
                 {
+#ifndef MANGOSBOT_ONE
+                    // (for MANGOSBOT_ONE this is set on the queue thread with the
+                    // correct [0]=skirmish/[1]=rated index — see lambda above)
                     NeedBots[queueTypeId][bracketId][TeamId] = true;
+#endif
                 }
                 else
                 {
@@ -1658,7 +1680,7 @@ void RandomPlayerbotMgr::CheckBgQueue()
             {
                 sWorld.GetBGQueue().GetMessager().AddMessage([queueTypeId, botId = bot->GetObjectGuid(), arenaType = arenaType, bracketId = bracketId, tempT = TeamId](BattleGroundQueue* bgQueue)
                     {
-                        uint32 TeamId;
+                        uint32 TeamId = 0;
                         GroupQueueInfo ginfo;
 
                         BattleGroundQueueItem* queueItem = &bgQueue->GetBattleGroundQueue(queueTypeId);
@@ -1682,11 +1704,16 @@ void RandomPlayerbotMgr::CheckBgQueue()
 
                         sRandomPlayerbotMgr.ArenaBots[queueTypeId][bracketId][TeamId][tempT]++;
 
+                        // arena entries use [0]=skirmish/[1]=rated as third index
+                        sRandomPlayerbotMgr.BgBots[queueTypeId][bracketId][TeamId]++;
                     }
                 );
             }
-#endif
+            if (arenaType == ARENA_TYPE_NONE)
+                BgBots[queueTypeId][bracketId][TeamId]++;
+#else
             BgBots[queueTypeId][bracketId][TeamId]++;
+#endif
         }
     });
 
