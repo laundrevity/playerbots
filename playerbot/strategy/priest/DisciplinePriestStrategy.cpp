@@ -89,6 +89,12 @@ void DisciplinePriestPvpStrategy::InitCombatTriggers(std::list<TriggerNode*>& tr
 {
     DisciplinePriestStrategy::InitCombatTriggers(triggers);
     PriestPvpStrategy::InitCombatTriggers(triggers);
+
+    // weave mana burn in pvp: CastManaBurnAction self-gates (own mana < 50%,
+    // target mana >= 20%), priority sits below healing/dispel actions
+    triggers.push_back(new TriggerNode(
+        "very often",
+        NextAction::array(0, new NextAction("mana burn", ACTION_NORMAL + 2), NULL)));
 }
 
 void DisciplinePriestPvpStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
@@ -444,6 +450,12 @@ void DisciplinePriestPvpStrategy::InitCombatTriggers(std::list<TriggerNode*>& tr
 {
     DisciplinePriestStrategy::InitCombatTriggers(triggers);
     PriestPvpStrategy::InitCombatTriggers(triggers);
+
+    // weave mana burn in pvp: CastManaBurnAction self-gates (own mana < 50%,
+    // target mana >= 20%), priority sits below healing/dispel actions
+    triggers.push_back(new TriggerNode(
+        "very often",
+        NextAction::array(0, new NextAction("mana burn", ACTION_NORMAL + 2), NULL)));
 }
 
 void DisciplinePriestPvpStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
@@ -803,6 +815,12 @@ void DisciplinePriestPvpStrategy::InitCombatTriggers(std::list<TriggerNode*>& tr
 {
     DisciplinePriestStrategy::InitCombatTriggers(triggers);
     PriestPvpStrategy::InitCombatTriggers(triggers);
+
+    // weave mana burn in pvp: CastManaBurnAction self-gates (own mana < 50%,
+    // target mana >= 20%), priority sits below healing/dispel actions
+    triggers.push_back(new TriggerNode(
+        "very often",
+        NextAction::array(0, new NextAction("mana burn", ACTION_NORMAL + 2), NULL)));
 }
 
 void DisciplinePriestPvpStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
