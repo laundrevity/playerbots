@@ -134,8 +134,6 @@ bool ApplyDirectiveAction::Execute(Event& event)
         incoming.anchor = DirectiveAnchor();
         note = "anchor dropped (wrong map)";
     }
-    if (incoming.hadChat)
-        note += std::string(note.empty() ? "" : "; ") + "chat ignored before P6";
     if (dropped)
     {
         std::ostringstream d;
@@ -146,6 +144,13 @@ bool ApplyDirectiveAction::Execute(Event& event)
     incoming.expiresAtMs = WorldTimer::getMSTime() + incoming.ttlMs;
     incoming.valid = true;
     SET_AI_VALUE(Directive, "directive", incoming);
+
+    // the shot-caller's party reply rides on a directive; speak it here on
+    // the bot's own thread (party channel when grouped)
+    if (!incoming.chatSay.empty() && bot->GetGroup())
+        ai->TellPlayerNoFacing(GetMaster(), incoming.chatSay,
+                               PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL,
+                               /*isPrivate=*/false);
 
     Report(incoming, true, note);
     return true;

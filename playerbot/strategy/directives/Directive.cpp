@@ -130,6 +130,12 @@ bool ParseDirective(const std::string& text, Directive& out, std::string& error)
 
     auto chat = j.find("chat");
     out.hadChat = chat != j.end() && !chat->is_null();
+    if (out.hadChat && chat->is_object())
+    {
+        out.chatSay = GetString(*chat, "say");
+        if (out.chatSay.size() > 140)
+            out.chatSay.resize(140);
+    }
 
     return true;
 }

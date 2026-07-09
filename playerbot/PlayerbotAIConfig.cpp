@@ -654,6 +654,12 @@ bool PlayerbotAIConfig::Initialize()
     directiveStubMode = config.GetIntDefault("AiPlayerbot.Directive.StubMode", 1);
     directiveMaxTtlMs = config.GetIntDefault("AiPlayerbot.Directive.MaxTtlMs", 30000);
 
+    // bot-brains fast-tier shot-caller
+    shotCallerEnabled = config.GetIntDefault("AiPlayerbot.ShotCaller.Enabled", 1);
+    shotCallerHost = config.GetStringDefault("AiPlayerbot.ShotCaller.Host", "127.0.0.1");
+    shotCallerPort = config.GetIntDefault("AiPlayerbot.ShotCaller.Port", 8090);
+    shotCallerTimeoutMs = config.GetIntDefault("AiPlayerbot.ShotCaller.TimeoutMs", 8000);
+
     //LLM START
     llmEnabled = config.GetIntDefault("AiPlayerbot.LLMEnabled", 1);
     llmApiEndpoint = config.GetStringDefault("AiPlayerbot.LLMApiEndpoint", "http://127.0.0.1:5001/api/v1/generate");

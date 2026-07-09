@@ -46,7 +46,8 @@ namespace ai
         CooldownPolicy cooldowns = CooldownPolicy::Normal;
         uint32 ccCount = 0;               // parsed, not executed in P2
         bool hasRetreat = false;          // parsed, not executed in P2
-        bool hadChat = false;             // ignored before P6
+        bool hadChat = false;
+        std::string chatSay;              // spoken in party on acceptance (shot-caller reply)
 
         bool IsActiveNow(uint32 nowMs) const { return valid && nowMs < expiresAtMs; }
     };

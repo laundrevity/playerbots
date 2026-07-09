@@ -406,6 +406,10 @@ public:
     // bot-brains directive seam (P2)
     uint32 directiveEnabled, directiveStubMode, directiveMaxTtlMs;
 
+    // bot-brains fast-tier shot-caller (party chat -> llama-server -> directives)
+    uint32 shotCallerEnabled, shotCallerPort, shotCallerTimeoutMs;
+    std::string shotCallerHost;
+
     uint32 EatDrinkMinDistance = 5;
     uint32 EatDrinkMaxDistance = 1000;
 

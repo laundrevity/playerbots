@@ -6,6 +6,7 @@
 #include "playerbot/RandomPlayerbotMgr.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/TravelMgr.h"
+#include "playerbot/strategy/directives/ShotCaller.h"
 #include "Chat/ChannelMgr.h"
 #include "Social/SocialMgr.h"
 #include "Accounts/AccountMgr.h"
@@ -960,6 +961,11 @@ void PlayerbotMgr::HandleCommand(uint32 type, const std::string& text, uint32 la
 
     if (!sPlayerbotAIConfig.enabled)
         return;
+
+    // bot-brains shot-caller: the human's party chat IS the interface — the
+    // raw line (pre command-splitting) goes to the LLM tier, which mails
+    // directives back through DirectiveMgr. Bots still receive the text below.
+    sShotCaller.OnPartyChat(master, this, type, text);
 
     if (text.find(sPlayerbotAIConfig.commandSeparator) != std::string::npos)
     {

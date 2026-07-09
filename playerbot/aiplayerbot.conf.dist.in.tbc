@@ -1058,6 +1058,13 @@ AiPlayerbot.PerfMonEnabled = 0
 # AiPlayerbot.Directive.StubMode = 1
 # Upper clamp for directive ttl_ms (lower clamp is 500).
 # AiPlayerbot.Directive.MaxTtlMs = 30000
+# Fast-tier shot-caller: the human's party chat goes to a local llama-server
+# (json_schema-constrained) which mails directives back to the party's bots,
+# plus one short party reply. Requires the llm service (see start.sh).
+# AiPlayerbot.ShotCaller.Enabled = 1
+# AiPlayerbot.ShotCaller.Host = 127.0.0.1
+# AiPlayerbot.ShotCaller.Port = 8090
+# AiPlayerbot.ShotCaller.TimeoutMs = 8000
 
 # LLM values. These values are for noncombat strategy 'ai chat' which allows bots to reply using a LLM api.
 # For a quickstart download koboldcpp, a 7b model from huggingface and start kobold.
