@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CustomStrategy.h"
+#include "playerbot/strategy/directives/BrainStrategy.h"
 #include "generic/NonCombatStrategy.h"
 #include "generic/RacialsStrategy.h"
 #include "generic/ChatCommandHandlerStrategy.h"
@@ -86,6 +87,7 @@ namespace ai
             creators["potions"] = [](PlayerbotAI* ai) { return new UsePotionsStrategy(ai); };
             creators["cast time"] = [](PlayerbotAI* ai) { return new CastTimeStrategy(ai); };
             creators["threat"] = [](PlayerbotAI* ai) { return new ThreatStrategy(ai); };
+            creators["brain"] = [](PlayerbotAI* ai) { return new BrainStrategy(ai); };
             creators["tell target"] = [](PlayerbotAI* ai) { return new TellTargetStrategy(ai); };
             creators["pvp"] = [](PlayerbotAI* ai) { return new AttackEnemyPlayersStrategy(ai); };
             creators["return"] = [](PlayerbotAI* ai) { return new ReturnStrategy(ai); };

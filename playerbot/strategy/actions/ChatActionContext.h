@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ListQuestsActions.h"
+#include "playerbot/strategy/directives/DirectiveActions.h"
 #include "StatsAction.h"
 #include "LeaveGroupAction.h"
 #include "TellReputationAction.h"
@@ -126,6 +127,7 @@ namespace ai
             creators["talents"] = [](PlayerbotAI* ai) { return new ChangeTalentsAction(ai); };
             creators["spells"] = [](PlayerbotAI* ai) { return new ListSpellsAction(ai); };
             creators["co"] = [](PlayerbotAI* ai) { return new ChangeCombatStrategyAction(ai); };
+            creators["brain"] = [](PlayerbotAI* ai) { return new BrainCommandAction(ai); };
             creators["nc"] = [](PlayerbotAI* ai) { return new ChangeNonCombatStrategyAction(ai); };
             creators["de"] = [](PlayerbotAI* ai) { return new ChangeDeadStrategyAction(ai); };
             creators["react"] = [](PlayerbotAI* ai) { return new ChangeReactionStrategyAction(ai); };

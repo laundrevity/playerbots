@@ -403,6 +403,9 @@ public:
     std::set<uint32> llmBlockedReplyChannels;
     //LM END
 
+    // bot-brains directive seam (P2)
+    uint32 directiveEnabled, directiveStubMode, directiveMaxTtlMs;
+
     uint32 EatDrinkMinDistance = 5;
     uint32 EatDrinkMaxDistance = 1000;
 

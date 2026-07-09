@@ -679,6 +679,10 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
             combatEngine->addStrategies("behind", "stealth", "poisons", "buff", NULL);
         }
     }
+
+    // bot-brains directive seam: rides on every bot, inert without a real
+    // player's party (see BrainStrategy)
+    combatEngine->addStrategy("brain");
 }
 
 Engine* AiFactory::createCombatEngine(Player* player, PlayerbotAI* const facade, AiObjectContext* AiObjectContext)
@@ -1106,9 +1110,12 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
 #endif
         }
     }
+
+    // bot-brains directive seam (see BrainStrategy)
+    nonCombatEngine->addStrategy("brain");
 }
 
-Engine* AiFactory::createNonCombatEngine(Player* player, PlayerbotAI* const facade, AiObjectContext* AiObjectContext) 
+Engine* AiFactory::createNonCombatEngine(Player* player, PlayerbotAI* const facade, AiObjectContext* AiObjectContext)
 {
 	Engine* nonCombatEngine = new Engine(facade, AiObjectContext, BotState::BOT_STATE_NON_COMBAT);
     AddDefaultNonCombatStrategies(player, facade, nonCombatEngine);

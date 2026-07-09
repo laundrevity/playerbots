@@ -1,0 +1,59 @@
+#pragma once
+
+// Directive seam, schema v0 (bot-brains P2). A directive is a desire with a
+// TTL, never a command: brains (script | stub | llm) emit them, the executor
+// validates on the bot's own tick and may reject. See
+// wow-tbc-local/docs/design/directive-seam.md.
+
+#include "Entities/ObjectGuid.h"
+
+#include <string>
+#include <vector>
+
+namespace ai
+{
+    enum class DirectiveSource { Script, Stub, Llm };
+
+    enum class CooldownPolicy { Hold, Normal, Burn };
+
+    struct DirectiveTargetRef
+    {
+        ObjectGuid guid;      // resolved from "guid" (hex string), may be empty
+        std::string name;     // "name" fallback (LLM tier thinks in names)
+    };
+
+    struct DirectiveAnchor
+    {
+        bool hasCoords = false;
+        std::string name;
+        uint32 mapId = 0;
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+        float radius = 5.0f;
+    };
+
+    struct Directive
+    {
+        bool valid = false;               // set on acceptance only
+        std::string id;
+        std::string plan;
+        DirectiveSource src = DirectiveSource::Script;
+        uint32 ttlMs = 0;
+        uint32 expiresAtMs = 0;           // server-uptime ms, set on acceptance
+
+        std::vector<DirectiveTargetRef> requestedKillOrder;   // as sent
+        std::vector<ObjectGuid> killOrder;                    // validated subset
+        DirectiveAnchor anchor;
+        CooldownPolicy cooldowns = CooldownPolicy::Normal;
+        uint32 ccCount = 0;               // parsed, not executed in P2
+        bool hasRetreat = false;          // parsed, not executed in P2
+        bool hadChat = false;             // ignored before P6
+
+        bool IsActiveNow(uint32 nowMs) const { return valid && nowMs < expiresAtMs; }
+    };
+
+    // Wire form -> unvalidated Directive. Game-state validation happens in
+    // ApplyDirectiveAction on the bot's own tick.
+    bool ParseDirective(const std::string& text, Directive& out, std::string& error);
+
+    const char* DirectiveSourceTag(DirectiveSource src);
+}

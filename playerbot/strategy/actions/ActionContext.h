@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GenericActions.h"
+#include "playerbot/strategy/directives/DirectiveActions.h"
 #include "EmoteAction.h"
 #include "AddLootAction.h"
 #include "LootAction.h"
@@ -128,6 +129,8 @@ namespace ai
             creators["food"] = [](PlayerbotAI* ai) { return new EatAction(ai); };
             creators["drink"] = [](PlayerbotAI* ai) { return new DrinkAction(ai); };
             creators["tank assist"] = [](PlayerbotAI* ai) { return new TankAssistAction(ai); };
+            creators["apply directive"] = [](PlayerbotAI* ai) { return new ApplyDirectiveAction(ai); };
+            creators["stub brain emit"] = [](PlayerbotAI* ai) { return new StubBrainEmitAction(ai); };
             creators["dps assist"] = [](PlayerbotAI* ai) { return new DpsAssistAction(ai); };
             creators["dps aoe"] = [](PlayerbotAI* ai) { return new DpsAoeAction(ai); };
             creators["attack rti target"] = [](PlayerbotAI* ai) { return new AttackRTITargetAction(ai); };

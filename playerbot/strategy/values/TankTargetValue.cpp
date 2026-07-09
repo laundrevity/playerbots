@@ -2,6 +2,7 @@
 #include "playerbot/playerbot.h"
 #include "TankTargetValue.h"
 #include "PossibleAttackTargetsValue.h"
+#include "playerbot/strategy/directives/DirectiveValues.h"
 
 using namespace ai;
 
@@ -44,7 +45,10 @@ protected:
 Unit* TankTargetValue::Calculate()
 {
     Unit* rti = RtiTargetValue::Calculate();
-    if (rti) return rti;
+    if (rti) return rti;   // the master's mark always outranks the brain
+
+    Unit* directive = GetDirectiveKillTarget(ai, context);
+    if (directive) return directive;
 
     FindTargetForTankStrategy strategy(ai);
     return FindTarget(&strategy);

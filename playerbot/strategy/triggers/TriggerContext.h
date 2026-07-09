@@ -13,6 +13,7 @@
 #include "GuildTriggers.h"
 #include "StuckTriggers.h"
 #include "BotStateTriggers.h"
+#include "playerbot/strategy/directives/DirectiveTriggers.h"
 #include "PullTriggers.h"
 #include "OnyxiasLairDungeonTriggers.h"
 #include "MoltenCoreDungeonTriggers.h"
@@ -93,6 +94,8 @@ namespace ai
 
             creators["tank assist"] = [](PlayerbotAI* ai) { return new TankAssistTrigger(ai); };
             creators["lose aggro"] = [](PlayerbotAI* ai) { return new LoseAggroTrigger(ai); };
+            creators["directive pending"] = [](PlayerbotAI* ai) { return new DirectivePendingTrigger(ai); };
+            creators["stub brain replan"] = [](PlayerbotAI* ai) { return new StubBrainReplanTrigger(ai); };
             creators["has aggro"] = [](PlayerbotAI* ai) { return new HasAggroTrigger(ai); };
 
             creators["ranged light aoe"] = [](PlayerbotAI* ai) { return new RangedLightAoeTrigger(ai); };

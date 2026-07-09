@@ -649,6 +649,11 @@ bool PlayerbotAIConfig::Initialize()
     respawnModForPlayerBots = config.GetBoolDefault("AiPlayerbot.RespawnModForPlayerBots", false);
     respawnModForInstances = config.GetBoolDefault("AiPlayerbot.RespawnModForInstances", false);
 
+    // bot-brains directive seam (P2)
+    directiveEnabled = config.GetIntDefault("AiPlayerbot.Directive.Enabled", 1);
+    directiveStubMode = config.GetIntDefault("AiPlayerbot.Directive.StubMode", 1);
+    directiveMaxTtlMs = config.GetIntDefault("AiPlayerbot.Directive.MaxTtlMs", 30000);
+
     //LLM START
     llmEnabled = config.GetIntDefault("AiPlayerbot.LLMEnabled", 1);
     llmApiEndpoint = config.GetStringDefault("AiPlayerbot.LLMApiEndpoint", "http://127.0.0.1:5001/api/v1/generate");

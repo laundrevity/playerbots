@@ -1047,6 +1047,18 @@ AiPlayerbot.PerfMonEnabled = 0
 # AiPlayerbot.DiffWithPlayer = 100
 # AiPlayerbot.DiffEmpty = 200
 
+# Directive seam (bot-brains P2): external brains (script whisper "brain {json}",
+# in-process stub, later an LLM client) mail directives to party bots; the
+# executor validates and may reject. Instrumented via the core CombatEventLog.
+# Master enable for the seam: 0 = off, 1 = on (default).
+# AiPlayerbot.Directive.Enabled = 1
+# Stub brain mode: 0 = off, 1 = mirror (re-issues the bot's current target as
+# a directive while a real player's party bot is in combat; zero behavior
+# change, proves the seam end to end).
+# AiPlayerbot.Directive.StubMode = 1
+# Upper clamp for directive ttl_ms (lower clamp is 500).
+# AiPlayerbot.Directive.MaxTtlMs = 30000
+
 # LLM values. These values are for noncombat strategy 'ai chat' which allows bots to reply using a LLM api.
 # For a quickstart download koboldcpp, a 7b model from huggingface and start kobold.
 # (Default) KoboldCPP examples:

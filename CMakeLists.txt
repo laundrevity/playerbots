@@ -61,6 +61,10 @@ file(GLOB Playerbot_Values ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/strategy/values
     source_group("Player Bot\\Strategies\\Values" FILES ${Playerbot_Values})
     LIST(APPEND LIBRARY_SRCS ${Playerbot_Values})
 
+file(GLOB Playerbot_Directives ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/strategy/directives/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/strategy/directives/*.h)
+    source_group("Player Bot\\Strategies\\Directives" FILES ${Playerbot_Directives})
+    LIST(APPEND LIBRARY_SRCS ${Playerbot_Directives})
+
 ## Class files
 
 #Druid AI

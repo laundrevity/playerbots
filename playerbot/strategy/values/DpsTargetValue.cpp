@@ -2,6 +2,7 @@
 #include "playerbot/playerbot.h"
 #include "DpsTargetValue.h"
 #include "LeastHpTargetValue.h"
+#include "playerbot/strategy/directives/DirectiveValues.h"
 
 using namespace ai;
 
@@ -9,7 +10,10 @@ using namespace ai;
 Unit* DpsTargetValue::Calculate()
 {
     Unit* rti = RtiTargetValue::Calculate();
-    if (rti) return rti;
+    if (rti) return rti;   // the master's mark always outranks the brain
+
+    Unit* directive = GetDirectiveKillTarget(ai, context);
+    if (directive) return directive;
 
     FindLeastHpTargetStrategy strategy(ai);
     return TargetValue::FindTarget(&strategy);
