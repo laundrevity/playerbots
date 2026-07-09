@@ -1189,10 +1189,13 @@ namespace
     void GearArenaBot(Player* bot)
     {
         // arena opponents must threaten a well-geared real player: epic gear + gems,
-        // floored at ilvl 115 so old-world epics don't dilute the pool (~S3/T5 level)
+        // floored at ilvl 115 so old-world epics don't dilute the pool (~S3/T5 level).
+        // EquipGearBest, not EquipGear: EquipGear honors RandomGearProgression, whose
+        // low search level yields candidate pools entirely below the 115 floor - every
+        // pick gets filtered and the bot keeps its old gear.
         PlayerbotFactory factory(bot, bot->GetLevel(), ITEM_QUALITY_EPIC);
         factory.SetMinItemLevel(115);
-        factory.EquipGear();
+        factory.EquipArenaGear();
 
         // replace trinket 1 with the faction pvp medallion so "use pvp trinket" can break cc
         uint32 medallion = (bot->GetTeam() == ALLIANCE) ? 37864 : 37865;
@@ -1201,6 +1204,16 @@ namespace
             bot->DestroyItem(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_TRINKET1, true);
             bot->StoreNewItemInBestSlots(medallion, 1);
         }
+
+        // the next natural randomize would progressively re-gear the bot back down and
+        // silently dissolve the ladder's gear floor - push it out a month; team wipes
+        // and regens re-gear members anyway
+        sRandomPlayerbotMgr.SetValue(bot->GetGUIDLow(), "randomize", 1, "", 30 * 24 * 3600);
+
+        // random bots only persist on rare periodic saves - a crash or SIGKILL between
+        // the regen and the next save silently reverts every member to its old DB gear
+        // (the arena_team rows survive, so the ladder LOOKS regenerated but isn't)
+        bot->SaveToDB();
     }
 
     bool BotFitsArenaSlot(Player* bot, ArenaCompSlot const& slot)

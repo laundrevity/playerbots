@@ -60,6 +60,8 @@ public:
     void EnchantEquipment();
     void EquipGear() { InitEquipment(false, false); InitGems(); }
     void EquipGearBest() { return InitEquipment(false, false, false); }
+    // arena gearing: best-in-slot regardless of gear progression, gems included
+    void EquipArenaGear() { InitEquipment(false, false, false); InitGems(); }
     void EquipGearPartialUpgrade() { return InitEquipment(false, false, true, true); }
     void UpgradeGear(bool syncWithMaster) { return InitEquipment(!syncWithMaster, syncWithMaster); }
     void AddReagents() { return InitReagents(); }
