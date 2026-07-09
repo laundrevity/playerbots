@@ -24,6 +24,10 @@ void PlayerbotDbStore::Load(PlayerbotAI *ai, std::string preset)
         ai->ClearStrategies(BotState::BOT_STATE_NON_COMBAT);
         ai->ChangeStrategy("+chat", BotState::BOT_STATE_COMBAT);
         ai->ChangeStrategy("+chat", BotState::BOT_STATE_NON_COMBAT);
+        // always-on like "chat": saved snapshots predate the directive seam
+        // and would otherwise wipe it for every bot with a stored set
+        ai->ChangeStrategy("+brain", BotState::BOT_STATE_COMBAT);
+        ai->ChangeStrategy("+brain", BotState::BOT_STATE_NON_COMBAT);
 
         std::list<std::string> values;
         do
