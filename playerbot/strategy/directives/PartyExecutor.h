@@ -1,25 +1,30 @@
 #pragma once
 
-// PartyExecutor — the party bots' combat brain, written from scratch.
+// PartyExecutor — the party bots' brain, written from scratch.
 //
-// This file REPLACES the inherited strategy/relevance engine for every bot
-// serving a real player's party while in combat. There is no priority soup:
-// every decision below is a readable rule, in order, and the only external
-// inputs are (a) the LLM/script directives from the seam and (b) the raid
-// marks + chat of the human. The module is used strictly as an actuator
-// library (CanCastSpell/CastSpell = legality, movement actions = locomotion)
-// and as read-only sensors ("attackers" list). Out-of-combat behavior
-// (follow, loot, eat) still runs the module engine for now; combat never
-// does. Battlegrounds/arenas keep the old brain (separately tuned).
+// Owns EVERY decision tick (combat and non-combat) for every bot serving a
+// real player's party in PvE. The inherited strategy/relevance engine never
+// runs for these bots: no looting, no wandering, no unprompted cc — every
+// behavior below is a readable rule. The module is used strictly as an
+// actuator library (CanCastSpell/CastSpell = legality; follow / set behind /
+// reach melee / food / drink = locomotion & upkeep) and as read-only sensors
+// ("attackers" list, threat manager). Battlegrounds/arenas and the ambient
+// random bots keep the old engine.
 //
-// Decision order each tick:
-//   1. If this bot has a cc assignment from a directive -> keep it applied.
-//   2. Reflex: my target is casting and I have an interrupt -> use it.
-//   3. Tank reflex: a mob is on the healer/dps -> taunt it / switch to it.
-//   4. Target = skull mark > directive kill order > (tank: attackers,
-//      dps: the tank's target) > nearest attacker.
-//   5. Class rotation: short, explicit priority list per class.
-//   6. Nothing castable -> ensure auto-attack + close distance.
+// Combat, in order:
+//   1. cc assignments from the seam are a standing duty (and the ONLY cc)
+//   2. interrupt reflex (target mid-cast -> kick/counterspell/shield bash)
+//   3. one target rule: human's skull > LLM kill order > role default
+//      (tank: mob-on-healer emergency, then lowest-threat cycling;
+//       dps: assist the tank) > nearest attacker
+//   4. dps threat ceiling: specials stop above 90% of the tank's threat
+//   5. researched per-class rotations (prot warrior, combat rogue, mage,
+//      ret paladin; sources in wow-tbc-local docs) — others auto-attack
+//
+// Out of combat:
+//   follow the master, consume directives, eat/drink when low, and (tank)
+//   CHARGE-pull the skull or the LLM's ordered target. Nothing else: no
+//   loot, no travel, no grind.
 
 #include "Entities/ObjectGuid.h"
 
@@ -32,22 +37,27 @@ namespace ai
     class PartyExecutor
     {
     public:
-        // party bot + in combat + enabled -> the executor owns this tick
         static bool ShouldOwn(PlayerbotAI* ai, Player* bot);
         static void Tick(PlayerbotAI* ai, Player* bot);
 
     private:
+        static void CombatTick(PlayerbotAI* ai, Player* bot);
+        static void NonCombatTick(PlayerbotAI* ai, Player* bot);
+
         static bool Cast(PlayerbotAI* ai, const char* spell, Unit* target);
         static bool KeepCcApplied(PlayerbotAI* ai, Player* bot);
         static bool TryInterrupt(PlayerbotAI* ai, Player* bot, Unit* target);
         static Unit* LooseMobOnParty(PlayerbotAI* ai, Player* bot);
+        static Unit* LowestThreatAttacker(PlayerbotAI* ai, Player* bot);
         static Unit* PickTarget(PlayerbotAI* ai, Player* bot);
         static bool EngageTarget(PlayerbotAI* ai, Player* bot, Unit* target);
+        static bool ThreatCapped(PlayerbotAI* ai, Player* bot, Unit* target);
+        static bool MeleeGetBehind(PlayerbotAI* ai, Player* bot, Unit* target);
+        static bool TryChargePull(PlayerbotAI* ai, Player* bot);
 
         static bool TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool RogueTick(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool MageTick(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool RetPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target);
-        static bool GenericMeleeTick(PlayerbotAI* ai, Player* bot, Unit* target);
     };
 }

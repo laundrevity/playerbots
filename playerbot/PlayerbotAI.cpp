@@ -2047,9 +2047,9 @@ void PlayerbotAI::DoNextAction(bool min)
         return;
     }
 
-    // bot-brains: party bots in combat are driven by the PartyExecutor
-    // (legible C++ + LLM directives) — never by the inherited strategy
-    // engine. Out-of-combat (follow/loot/travel) still runs the engine.
+    // bot-brains: party bots are driven by the PartyExecutor (legible C++ +
+    // LLM directives) in AND out of combat — never by the inherited strategy
+    // engine. Only the dead-state engine (release/rez) and bg/arena remain.
     if (PartyExecutor::ShouldOwn(this, bot))
     {
         PartyExecutor::Tick(this, bot);
