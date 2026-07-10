@@ -37,9 +37,13 @@ Unit* ai::GetDirectiveKillTarget(PlayerbotAI* ai, AiObjectContext* context)
         return nullptr;
 
     Player* bot = ai->GetBot();
-    std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+    // "possible attack targets" (attackable, not evading), not the looser
+    // "possible targets": a pinned evading mob rubber-banded the tank live
+    std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible attack targets")->Get();
     for (const ObjectGuid& guid : directive.killOrder)
     {
+        if (guid == bot->GetObjectGuid())
+            continue;   // live bug: a self-target snapshot became "kill yourself"
         if (std::find(possible.begin(), possible.end(), guid) == possible.end())
             continue;
 

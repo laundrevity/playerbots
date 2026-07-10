@@ -1052,10 +1052,12 @@ AiPlayerbot.PerfMonEnabled = 0
 # executor validates and may reject. Instrumented via the core CombatEventLog.
 # Master enable for the seam: 0 = off, 1 = on (default).
 # AiPlayerbot.Directive.Enabled = 1
-# Stub brain mode: 0 = off, 1 = mirror (re-issues the bot's current target as
-# a directive while a real player's party bot is in combat; zero behavior
-# change, proves the seam end to end).
-# AiPlayerbot.Directive.StubMode = 1
+# Stub brain mode: 0 = off (default), 1 = mirror (re-issues the bot's current
+# target as a directive in combat). Mirror mode is retired seam-debugging
+# scaffolding: it PINS the bot's target selection (directives outrank the
+# default switchers), which froze tank-assist/loose-mob pickup in live play.
+# Enable only to debug the directive pipeline without an LLM.
+# AiPlayerbot.Directive.StubMode = 0
 # Upper clamp for directive ttl_ms (lower clamp is 500).
 # AiPlayerbot.Directive.MaxTtlMs = 30000
 # Fast-tier shot-caller: the human's party chat goes to a local llama-server

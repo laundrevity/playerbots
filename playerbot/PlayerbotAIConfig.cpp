@@ -651,7 +651,7 @@ bool PlayerbotAIConfig::Initialize()
 
     // bot-brains directive seam (P2)
     directiveEnabled = config.GetIntDefault("AiPlayerbot.Directive.Enabled", 1);
-    directiveStubMode = config.GetIntDefault("AiPlayerbot.Directive.StubMode", 1);
+    directiveStubMode = config.GetIntDefault("AiPlayerbot.Directive.StubMode", 0);
     directiveMaxTtlMs = config.GetIntDefault("AiPlayerbot.Directive.MaxTtlMs", 30000);
 
     // bot-brains fast-tier shot-caller

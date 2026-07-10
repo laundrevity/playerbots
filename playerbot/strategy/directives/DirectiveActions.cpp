@@ -89,9 +89,9 @@ bool ApplyDirectiveAction::Execute(Event& event)
     // TTL is clamped, never trusted
     incoming.ttlMs = std::max(500u, std::min(incoming.ttlMs, sPlayerbotAIConfig.directiveMaxTtlMs));
 
-    // validate kill order against live game state (same legality shape as
-    // rti/skull targeting: possible target, alive, within sight)
-    std::list<ObjectGuid> possible = AI_VALUE(std::list<ObjectGuid>, "possible targets");
+    // validate kill order against live game state — the attackable set
+    // (not-evading), same reason as DirectiveValues::GetDirectiveKillTarget
+    std::list<ObjectGuid> possible = AI_VALUE(std::list<ObjectGuid>, "possible attack targets");
     uint32 dropped = 0;
     for (const DirectiveTargetRef& ref : incoming.requestedKillOrder)
     {
@@ -111,7 +111,9 @@ bool ApplyDirectiveAction::Execute(Event& event)
         }
 
         Unit* unit = guid ? ai->GetUnit(guid) : nullptr;
-        if (!unit || sServerFacade.UnitIsDead(unit) ||
+        if (!unit || unit == bot ||
+            (unit->IsPlayer() && bot->GetGroup() && ((Player*)unit)->GetGroup() == bot->GetGroup()) ||
+            sServerFacade.UnitIsDead(unit) ||
             std::find(possible.begin(), possible.end(), guid) == possible.end() ||
             !bot->IsWithinDistInMap(unit, sPlayerbotAIConfig.sightDistance, false))
         {
@@ -158,11 +160,11 @@ bool ApplyDirectiveAction::Execute(Event& event)
 
 bool StubBrainEmitAction::Execute(Event& event)
 {
-    // mirror mode: re-issue the bot's own current target as the kill order —
-    // the architecture runs end to end, behavior stays baseline
+    // mirror mode (retired debug scaffolding, StubMode=1 only): re-issue the
+    // bot's current target. NB it PINS target selection while active.
     Unit* target = AI_VALUE(Unit*, "current target");
-    if (!target || sServerFacade.UnitIsDead(target))
-        return false;
+    if (!target || target == bot || sServerFacade.UnitIsDead(target))
+        return false;   // live bug: a self-buff moment snapshotted self as target
 
     char guidHex[32];
     snprintf(guidHex, sizeof(guidHex), "0x%llx",
