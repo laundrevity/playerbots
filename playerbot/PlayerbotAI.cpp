@@ -6042,7 +6042,9 @@ ActivePiorityType PlayerbotAI::GetPriorityType()
         if (!player || !player->IsInWorld())
             continue;
 
-        if (player->GetSocial()->HasFriend(bot->GetObjectGuid()))
+        // bots can land in this map mid-login with no social list loaded
+        // (crashed live: .bot add of a bot with a stale random-bot 'add' row)
+        if (player->GetSocial() && player->GetSocial()->HasFriend(bot->GetObjectGuid()))
             return ActivePiorityType::PLAYER_FRIEND;
     }
 
@@ -8497,7 +8499,10 @@ bool PlayerbotAI::HasPlayerRelation()
 
     for (auto& p : sRandomPlayerbotMgr.GetPlayers())
     {
-        if (p.second && p.second->GetSocial()->HasFriend(bot->GetObjectGuid()))
+        // p.second can be THIS bot mid-login (MovePlayerBot inserts it) with
+        // its social list not yet loaded — the null deref was a live crash
+        if (p.second && p.second != bot && p.second->GetSocial() &&
+            p.second->GetSocial()->HasFriend(bot->GetObjectGuid()))
         {
             SetPlayerFriend(true);
             return true;
