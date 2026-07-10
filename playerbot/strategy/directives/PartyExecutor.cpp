@@ -1,13 +1,17 @@
 #include "playerbot/playerbot.h"
 #include "playerbot/strategy/directives/PartyExecutor.h"
 
+#include "playerbot/AiFactory.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/strategy/directives/DirectiveMgr.h"
 #include "playerbot/strategy/directives/DirectiveValues.h"
 
 #include "Groups/Group.h"
+#include "MotionGenerators/MotionMaster.h"
 #include "Util/Timer.h"
+
+#include <cmath>
 
 using namespace ai;
 
@@ -276,6 +280,70 @@ bool PartyExecutor::EngageTarget(PlayerbotAI* ai, Player* bot, Unit* target)
     return false;
 }
 
+// directives' cooldown policy: burn -> offensive cooldowns allowed
+bool PartyExecutor::BurnPolicy(PlayerbotAI* ai)
+{
+    Directive directive = ai->GetAiObjectContext()->GetValue<Directive>("directive")->Get();
+    return directive.IsActiveNow(WorldTimer::getMSTime()) &&
+           directive.cooldowns == CooldownPolicy::Burn;
+}
+
+// good tanks turn the mob away from the party: stand on the FAR side of the
+// target from the party's center — the mob turns to face the tank, so its
+// frontal cone (cleaves, breaths) points into empty space. Memoryless: once
+// the tank stands there the condition self-clears and no more moves happen.
+bool PartyExecutor::TankFaceAway(PlayerbotAI* ai, Player* bot, Unit* target)
+{
+    if (target->GetVictim() != bot)
+        return false;   // reposition only once the mob is actually on me
+    if (bot->IsMoving() || target->IsMoving())
+        return false;
+    if (!bot->CanReachWithMeleeAttack(target))
+        return false;
+
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
+    float cx = 0.0f, cy = 0.0f;
+    uint32 count = 0;
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->getSource();
+        if (!member || member == bot || !member->IsInWorld() || member->GetMapId() != bot->GetMapId())
+            continue;
+        if (sServerFacade.GetDistance2d(bot, member) > 40.0f)
+            continue;
+        cx += member->GetPositionX();
+        cy += member->GetPositionY();
+        ++count;
+    }
+    if (!count)
+        return false;
+    cx /= count;
+    cy /= count;
+
+    float tx = target->GetPositionX(), ty = target->GetPositionY();
+    float dx = tx - cx, dy = ty - cy;
+    float length = std::sqrt(dx * dx + dy * dy);
+    if (length < 1.0f)
+        return false;   // party is on top of the mob; nothing sane to do
+    dx /= length;
+    dy /= length;
+
+    // far-side melee spot, 2y past the target away from the party
+    float px = tx + dx * 2.0f, py = ty + dy * 2.0f;
+    float bx = bot->GetPositionX() - px, by = bot->GetPositionY() - py;
+    float away = std::sqrt(bx * bx + by * by);
+    if (away < 2.5f)
+        return false;   // already on the far side
+    if (away > 15.0f)
+        return false;   // something is off; don't sprint across the room
+
+    bot->GetMotionMaster()->MovePoint(0, px, py, target->GetPositionZ());
+    ai->SetAIInternalUpdateDelay(300);
+    return true;
+}
+
 // 4. dps discipline: never ride past the tank's threat
 bool PartyExecutor::ThreatCapped(PlayerbotAI* ai, Player* bot, Unit* target)
 {
@@ -309,6 +377,13 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
         return true;
 
     if (target->GetVictim() && target->GetVictim() != bot && Cast(ai, "taunt", target))
+        return true;
+
+    if (TankFaceAway(ai, bot, target))
+        return true;
+
+    // survival while actively tanked
+    if (target->GetVictim() == bot && Cast(ai, "shield block", bot))
         return true;
 
     std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
@@ -349,13 +424,28 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
         return true;   // white swings only until the tank pulls ahead
     }
 
+    if (BurnPolicy(ai))
+    {
+        if (Cast(ai, "adrenaline rush", bot))
+            return true;
+        if (Cast(ai, "blade flurry", bot))
+            return true;
+    }
+
     uint8 combo = bot->GetComboPoints();
 
     // Slice and Dice uptime is the whole spec (icy-veins combat rogue)
     if (combo >= 2 && !ai->HasAura("slice and dice", bot) && Cast(ai, "slice and dice", target))
         return true;
-    if (combo >= 5 && ai->HasAura("slice and dice", bot) && Cast(ai, "eviscerate", target))
-        return true;
+    if (combo >= 5 && ai->HasAura("slice and dice", bot))
+    {
+        // long-lived targets get Rupture, everything else gets Eviscerate
+        bool bossLike = target->GetMaxHealth() > bot->GetMaxHealth() * 3;
+        if (bossLike && !ai->HasAura("rupture", target, false, true) && Cast(ai, "rupture", target))
+            return true;
+        if (Cast(ai, "eviscerate", target))
+            return true;
+    }
     if (Cast(ai, "sinister strike", target))
         return true;
     return false;
@@ -370,12 +460,41 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
         return true;   // stop casting until the tank pulls ahead
     }
 
-    // TODO scorch-weave needs talent detection (Improved Scorch) — without
-    // it the debuff never applies and a naive check loops scorch forever
-    if (Cast(ai, "fireball", target))
-        return true;
-    if (Cast(ai, "frostbolt", target))
-        return true;
+    // spec by talent tab (legible sensor): 0 = arcane, 1 = fire, 2 = frost
+    int spec = AiFactory::GetPlayerSpecTab(bot);
+
+    if (spec == 1)
+    {
+        if (BurnPolicy(ai) && Cast(ai, "combustion", bot))
+            return true;
+        // 5x Improved Scorch stacks, refresh under 4s, else fireball stream
+        Aura* vulnerability = ai->GetAura("fire vulnerability", target);
+        uint32 stacks = vulnerability ? vulnerability->GetStackAmount() : 0;
+        int32 remaining = vulnerability ? vulnerability->GetAuraDuration() : 0;
+        if ((stacks < 5 || remaining < 4000) && Cast(ai, "scorch", target))
+            return true;
+        if (Cast(ai, "fireball", target))
+            return true;
+    }
+    else if (spec == 0)
+    {
+        if (BurnPolicy(ai) && Cast(ai, "arcane power", bot))
+            return true;
+        // arcane blast while mana holds, frostbolt as the recovery filler
+        if (bot->GetPower(POWER_MANA) * 5 > bot->GetMaxPower(POWER_MANA) * 2 &&
+            Cast(ai, "arcane blast", target))
+            return true;
+        if (Cast(ai, "frostbolt", target))
+            return true;
+    }
+    else
+    {
+        if (BurnPolicy(ai) && Cast(ai, "icy veins", bot))
+            return true;
+        if (Cast(ai, "frostbolt", target))
+            return true;
+    }
+
     if (Cast(ai, "fire blast", target))
         return true;
     if (Cast(ai, "shoot", target))
@@ -401,8 +520,17 @@ bool PartyExecutor::RetPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target)
             Cast(ai, "seal of righteousness", bot))
             return true;
     }
-    if (Cast(ai, "judgement", target))
+    if (BurnPolicy(ai) && Cast(ai, "avenging wrath", bot))
         return true;
+
+    if (Cast(ai, "judgement", target))
+    {
+        // judgement is off the GCD and consumes the seal: reseal immediately
+        if (!Cast(ai, "seal of command", bot))
+            if (!Cast(ai, "seal of blood", bot))
+                Cast(ai, "seal of righteousness", bot);
+        return true;
+    }
     if (Cast(ai, "crusader strike", target))
         return true;
     return false;
