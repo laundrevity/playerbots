@@ -2203,6 +2203,18 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
         return false;
     }
 
+    // never lifecycle-manage a real player's alts: the .bot chat command
+    // routes ALL adds through this manager, and without this guard an alt
+    // with no 'add' event row gets evicted seconds after login (lived:
+    // hello-whisper then instant logout), while stale rows risk the random
+    // maintenance randomizing the player's own characters
+    {
+        ObjectGuid guid = ObjectGuid(HIGHGUID_PLAYER, bot);
+        uint32 account = sObjectMgr.GetPlayerAccountIdByGUID(guid);
+        if (account && !sPlayerbotAIConfig.IsInRandomAccountList(account))
+            return false;
+    }
+
     PlayerbotAI* ai = player ? player->GetPlayerbotAI() : NULL;
 
     bool botsAllowedInWorld = !sPlayerbotAIConfig.randomBotLoginWithPlayer || (!players.empty() && sWorld.GetActiveSessionCount() > 0);

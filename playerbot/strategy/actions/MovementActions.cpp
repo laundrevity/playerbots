@@ -451,7 +451,7 @@ bool MovementAction::UseTransport(PlayerbotAI* ai, uint32 entry, WorldPosition d
     {
         GameObjectInfo const* data = sGOStorage.LookupEntry<GameObjectInfo>(transport->GetEntry());
         std::string transportName = transport->GetName();
-        if (transportName.empty())
+        if (transportName.empty() && data)
             transportName = data->name;
 
         if (dockPosition.mapid == bot->GetMapId() && dockPosition.sqDistance2d(transport) < INTERACTION_DISTANCE * INTERACTION_DISTANCE)
@@ -485,7 +485,7 @@ bool MovementAction::UseTransport(PlayerbotAI* ai, uint32 entry, WorldPosition d
 
         GameObjectInfo const* data = sGOStorage.LookupEntry<GameObjectInfo>(transport->GetEntry());
         transportName = transport->GetName();
-        if (transportName.empty())
+        if (transportName.empty() && data)
             transportName = data->name;
     }
 
