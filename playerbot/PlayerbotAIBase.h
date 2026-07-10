@@ -17,11 +17,12 @@ public:
     virtual void UpdateAI(uint32 elapsed);
     
     uint32 GetAIInternalUpdateDelay() const { return aiInternalUpdateDelay; }
+    // public: the PartyExecutor paces bots from outside, same as the engine
+    void SetAIInternalUpdateDelay(const uint32 delay);
 
 protected:
     virtual void UpdateAIInternal(uint32 elapsed, bool minimal = false);
     bool CanUpdateAIInternal() const { return aiInternalUpdateDelay < 100U; }
-    void SetAIInternalUpdateDelay(const uint32 delay);
     void ResetAIInternalUpdateDelay() { aiInternalUpdateDelay = 0U; }
     void IncreaseAIInternalUpdateDelay(uint32 delay);
     void YieldAIInternalThread(bool minimal = false);

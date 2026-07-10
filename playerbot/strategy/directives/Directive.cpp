@@ -123,7 +123,26 @@ bool ParseDirective(const std::string& text, Directive& out, std::string& error)
 
     auto cc = j.find("cc");
     if (cc != j.end() && cc->is_array())
+    {
         out.ccCount = uint32(cc->size());
+        for (const json& entry : *cc)
+        {
+            if (!entry.is_object())
+                continue;
+            Directive::CcAssignment assignment;
+            auto target = entry.find("target");
+            if (target != entry.end() && target->is_object())
+            {
+                assignment.guid = ParseGuid(GetString(*target, "guid"));
+                assignment.name = GetString(*target, "name");
+            }
+            assignment.spell = GetString(entry, "spell");
+            if ((assignment.guid || !assignment.name.empty()) && !assignment.spell.empty())
+                out.requestedCc.push_back(assignment);
+            if (out.requestedCc.size() >= 4)
+                break;
+        }
+    }
 
     auto retreat = j.find("retreat");
     out.hasRetreat = retreat != j.end() && retreat->is_object();

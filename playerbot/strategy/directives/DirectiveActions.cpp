@@ -129,6 +129,29 @@ bool ApplyDirectiveAction::Execute(Event& event)
         return false;
     }
 
+    // cc assignments: same resolution + attackable-set rules as kill order
+    for (Directive::CcAssignment assignment : incoming.requestedCc)
+    {
+        if (!assignment.guid && !assignment.name.empty())
+            for (const ObjectGuid& candidate : possible)
+            {
+                Unit* unit = ai->GetUnit(candidate);
+                if (unit && SameNameNoCase(unit->GetName(), assignment.name.c_str()))
+                {
+                    assignment.guid = candidate;
+                    break;
+                }
+            }
+        Unit* unit = assignment.guid ? ai->GetUnit(assignment.guid) : nullptr;
+        if (!unit || unit == bot || sServerFacade.UnitIsDead(unit) ||
+            std::find(possible.begin(), possible.end(), assignment.guid) == possible.end())
+        {
+            ++dropped;
+            continue;
+        }
+        incoming.cc.push_back(assignment);
+    }
+
     // anchors must be on this map; a bad anchor degrades, it doesn't reject
     std::string note;
     if (incoming.anchor.hasCoords && incoming.anchor.mapId != bot->GetMapId())

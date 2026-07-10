@@ -5,6 +5,7 @@
 
 #include "playerbot/AiFactory.h"
 #include "playerbot/strategy/directives/ShotCaller.h"
+#include "playerbot/strategy/directives/PartyExecutor.h"
 
 #include "MotionGenerators/MovementGenerator.h"
 #include "Grids/GridNotifiers.h"
@@ -2043,6 +2044,15 @@ void PlayerbotAI::DoNextAction(bool min)
     if (!bot->IsInWorld() || bot->IsBeingTeleported() || (GetMaster() && GetMaster()->IsBeingTeleported()))
     {
         SetAIInternalUpdateDelay(sPlayerbotAIConfig.globalCoolDown);
+        return;
+    }
+
+    // bot-brains: party bots in combat are driven by the PartyExecutor
+    // (legible C++ + LLM directives) — never by the inherited strategy
+    // engine. Out-of-combat (follow/loot/travel) still runs the engine.
+    if (PartyExecutor::ShouldOwn(this, bot))
+    {
+        PartyExecutor::Tick(this, bot);
         return;
     }
 

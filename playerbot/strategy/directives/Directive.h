@@ -42,6 +42,15 @@ namespace ai
 
         std::vector<DirectiveTargetRef> requestedKillOrder;   // as sent
         std::vector<ObjectGuid> killOrder;                    // validated subset
+
+        struct CcAssignment
+        {
+            ObjectGuid guid;      // validated target
+            std::string name;     // as sent (name fallback)
+            std::string spell;    // e.g. "polymorph" — legality checked at cast time
+        };
+        std::vector<CcAssignment> requestedCc;
+        std::vector<CcAssignment> cc;                         // validated subset
         DirectiveAnchor anchor;
         CooldownPolicy cooldowns = CooldownPolicy::Normal;
         uint32 ccCount = 0;               // parsed, not executed in P2

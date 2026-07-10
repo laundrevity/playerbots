@@ -410,6 +410,9 @@ public:
     uint32 shotCallerEnabled, shotCallerPort, shotCallerTimeoutMs;
     std::string shotCallerHost;
 
+    // bot-brains party executor (from-scratch combat brain for party bots)
+    uint32 executorEnabled;
+
     uint32 EatDrinkMinDistance = 5;
     uint32 EatDrinkMaxDistance = 1000;
 

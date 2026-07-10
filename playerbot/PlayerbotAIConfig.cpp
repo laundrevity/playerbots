@@ -660,6 +660,9 @@ bool PlayerbotAIConfig::Initialize()
     shotCallerPort = config.GetIntDefault("AiPlayerbot.ShotCaller.Port", 8090);
     shotCallerTimeoutMs = config.GetIntDefault("AiPlayerbot.ShotCaller.TimeoutMs", 8000);
 
+    // bot-brains party executor
+    executorEnabled = config.GetIntDefault("AiPlayerbot.Executor.Enabled", 1);
+
     //LLM START
     llmEnabled = config.GetIntDefault("AiPlayerbot.LLMEnabled", 1);
     llmApiEndpoint = config.GetStringDefault("AiPlayerbot.LLMApiEndpoint", "http://127.0.0.1:5001/api/v1/generate");
