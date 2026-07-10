@@ -22,7 +22,6 @@
 #include <vector>
 
 class Player;
-class PlayerbotMgr;
 
 namespace ai
 {
@@ -31,8 +30,10 @@ namespace ai
     public:
         static ShotCaller& instance();
 
-        // world thread only: snapshot + enqueue (cheap; no network)
-        void OnPartyChat(Player* master, PlayerbotMgr* mgr, uint32 type, const std::string& text);
+        // world thread only: snapshot + enqueue (cheap; no network). Called
+        // once per receiving bot (the core hands party chat to each bot's
+        // HandleCommand) — deduped internally to one LLM call per line.
+        void OnPartyChat(Player* master, uint32 type, const std::string& text);
 
     private:
         ShotCaller() = default;
@@ -55,6 +56,11 @@ namespace ai
         std::condition_variable m_wake;
         std::deque<Job> m_queue;
         bool m_workerStarted = false;
+
+        // world-thread-only dedupe (every party bot relays the same line)
+        ObjectGuid m_lastMaster;
+        std::string m_lastText;
+        uint32 m_lastMs = 0;
     };
 }
 

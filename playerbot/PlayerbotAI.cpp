@@ -4,6 +4,7 @@
 #include <iomanip>
 
 #include "playerbot/AiFactory.h"
+#include "playerbot/strategy/directives/ShotCaller.h"
 
 #include "MotionGenerators/MovementGenerator.h"
 #include "Grids/GridNotifiers.h"
@@ -1383,6 +1384,13 @@ void PlayerbotAI::HandleCommand(uint32 type, const std::string& text, Player& fr
 
     if (type == CHAT_MSG_SYSTEM)
         return;
+
+    // bot-brains shot-caller: the human's party/raid chat IS the interface.
+    // The core's CHAT_MSG_PARTY case hands the line to each bot directly
+    // (never to PlayerbotMgr), so the hook lives here; ShotCaller dedupes
+    // the per-bot relays into one LLM call.
+    if ((type == CHAT_MSG_PARTY || type == CHAT_MSG_RAID) && fromPlayer.isRealPlayer())
+        sShotCaller.OnPartyChat(&fromPlayer, type, filtered);
 
     if (filtered.find(sPlayerbotAIConfig.commandSeparator) != std::string::npos)
     {

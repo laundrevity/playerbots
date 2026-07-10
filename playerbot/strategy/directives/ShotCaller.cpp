@@ -116,7 +116,7 @@ ShotCaller& ShotCaller::instance()
     return caller;
 }
 
-void ShotCaller::OnPartyChat(Player* master, PlayerbotMgr* mgr, uint32 type, const std::string& text)
+void ShotCaller::OnPartyChat(Player* master, uint32 type, const std::string& text)
 {
     if (!sPlayerbotAIConfig.shotCallerEnabled || !sPlayerbotAIConfig.directiveEnabled)
         return;
@@ -126,6 +126,15 @@ void ShotCaller::OnPartyChat(Player* master, PlayerbotMgr* mgr, uint32 type, con
 
     if (!master || text.empty() || text.size() > 400)
         return;
+
+    // every bot in the party relays the same line: one call only
+    uint32 now = WorldTimer::getMSTime();
+    if (master->GetObjectGuid() == m_lastMaster && text == m_lastText &&
+        WorldTimer::getMSTimeDiff(m_lastMs, now) < 3000)
+        return;
+    m_lastMaster = master->GetObjectGuid();
+    m_lastText = text;
+    m_lastMs = now;
 
     Group* group = master->GetGroup();
     if (!group)
