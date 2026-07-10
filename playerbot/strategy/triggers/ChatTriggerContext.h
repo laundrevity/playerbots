@@ -61,6 +61,7 @@ namespace ai
             creators["accept"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "accept"); };
             creators["home"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "home"); };
             creators["brain"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "brain"); };
+            creators["maintain"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "maintain"); };
             creators["load ai"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "load ai"); };
             creators["list ai"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "list ai"); };
             creators["save ai"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "save ai"); };

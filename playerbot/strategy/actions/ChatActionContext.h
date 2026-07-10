@@ -128,6 +128,7 @@ namespace ai
             creators["spells"] = [](PlayerbotAI* ai) { return new ListSpellsAction(ai); };
             creators["co"] = [](PlayerbotAI* ai) { return new ChangeCombatStrategyAction(ai); };
             creators["brain"] = [](PlayerbotAI* ai) { return new BrainCommandAction(ai); };
+            creators["maintain"] = [](PlayerbotAI* ai) { return new MaintainAction(ai); };
             creators["nc"] = [](PlayerbotAI* ai) { return new ChangeNonCombatStrategyAction(ai); };
             creators["de"] = [](PlayerbotAI* ai) { return new ChangeDeadStrategyAction(ai); };
             creators["react"] = [](PlayerbotAI* ai) { return new ChangeReactionStrategyAction(ai); };

@@ -1,7 +1,9 @@
 #include "playerbot/playerbot.h"
 #include "playerbot/strategy/directives/DirectiveActions.h"
 
+#include "playerbot/AiFactory.h"
 #include "playerbot/PlayerbotAIConfig.h"
+#include "playerbot/PlayerbotFactory.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/strategy/directives/DirectiveMgr.h"
 #include "playerbot/strategy/directives/DirectiveValues.h"
@@ -178,6 +180,28 @@ bool ApplyDirectiveAction::Execute(Event& event)
                                /*isPrivate=*/false);
 
     Report(incoming, true, note);
+    return true;
+}
+
+bool MaintainAction::Execute(Event& event)
+{
+    Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
+
+    int spec = AiFactory::GetPlayerSpecTab(bot);   // keep the tree he's in
+    PlayerbotFactory factory(bot, bot->GetLevel(), ITEM_QUALITY_EPIC);
+
+    bot->resetTalents(true);
+    factory.InitTalents(uint32(spec));
+    if (bot->GetFreeTalentPoints())
+        factory.InitTalents(uint32(2 - spec));     // dump leftovers off-tree
+
+    factory.EnchantEquipment();                    // per-spec enchant template
+    factory.InitGems();                            // fill empty sockets
+    bot->SaveToDB();
+
+    std::ostringstream out;
+    out << "maintained: talents tab " << spec << " refilled, gear enchanted + gemmed, saved";
+    ai->TellPlayer(requester, out.str());
     return true;
 }
 

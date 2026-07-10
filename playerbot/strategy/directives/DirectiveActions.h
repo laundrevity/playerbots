@@ -37,4 +37,15 @@ namespace ai
         StubBrainEmitAction(PlayerbotAI* ai) : Action(ai, "stub brain emit") {}
         virtual bool Execute(Event& event) override;
     };
+
+    // "maintain" (whisper or /p): systematic character upkeep — reset and
+    // refill the bot's OWN talent tree from the factory premades, apply the
+    // per-spec enchant template to equipped gear, fill empty sockets, save.
+    // Never rerolls equipment.
+    class MaintainAction : public ChatCommandAction
+    {
+    public:
+        MaintainAction(PlayerbotAI* ai) : ChatCommandAction(ai, "maintain") {}
+        virtual bool Execute(Event& event) override;
+    };
 }

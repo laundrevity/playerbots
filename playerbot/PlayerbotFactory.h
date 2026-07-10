@@ -71,6 +71,10 @@ public:
     void InitAmmo();
     void InitPet();
     void InitPetSpells();
+    // bot-brains maintenance ("maintain" command): fill a specific talent
+    // tab and gem equipped items without rerolling gear
+    void InitTalents(uint32 specNo);
+    void InitGems();
 
 private:
     void Prepare();
@@ -91,7 +95,6 @@ private:
     void InitAvailableSpells();
     void InitSpecialSpells();
     void InitTalentsTree(bool incremental);
-    void InitTalents(uint32 specNo);
     void InitQuests(std::list<uint32>& questMap);
     void InitTaxiNodes();
     void ClearInventory();
@@ -124,7 +127,6 @@ private:
     void LoadEnchantContainer();
     void ApplyEnchantTemplate();
     void ApplyEnchantTemplate(uint8 spec, Item* item = nullptr);
-    void InitGems();
     EnchantContainer::const_iterator GetEnchantContainerBegin() { return m_EnchantContainer.begin(); }
     EnchantContainer::const_iterator GetEnchantContainerEnd() { return m_EnchantContainer.end(); }
 
