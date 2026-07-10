@@ -90,16 +90,140 @@ bool PartyExecutor::TryChargePull(PlayerbotAI* ai, Player* bot)
     return Cast(ai, "charge", target);
 }
 
+// walk in / charge / body-pull, depending on range
+bool PartyExecutor::EngagePull(PlayerbotAI* ai, Player* bot, Unit* target)
+{
+    float distance = sServerFacade.GetDistance2d(bot, target);
+    if (distance > 24.0f)
+    {
+        bot->GetMotionMaster()->MovePoint(0, target->GetPositionX(), target->GetPositionY(),
+                                          target->GetPositionZ());
+        ai->SetAIInternalUpdateDelay(AFTER_CAST_DELAY_MS);
+        return true;
+    }
+    if (bot->getClass() == CLASS_WARRIOR && distance >= 8.0f)
+    {
+        if (!ai->HasAura("battle stance", bot) && Cast(ai, "battle stance", bot))
+            return true;
+        if (Cast(ai, "charge", target))
+            return true;
+    }
+    // in melee (or charge unavailable): open by hitting it
+    AiObjectContext* context = ai->GetAiObjectContext();
+    context->GetValue<Unit*>("current target")->Set(target);
+    bot->Attack(target, true);
+    if (!bot->CanReachWithMeleeAttack(target))
+        ai->DoSpecificAction("reach melee", Event(), true);
+    ai->SetAIInternalUpdateDelay(AFTER_CAST_DELAY_MS);
+    return true;
+}
+
+// The tank pulls ON HIS OWN. The human's facing is the route intent: the
+// next pack is the nearest attackable, out-of-combat hostile inside a ~75°
+// cone along the master's heading. Pacing is a human tank's checklist —
+// nobody in combat, nobody eating/low, healer has mana, party in tow.
+bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
+{
+    if (bot->getClass() != CLASS_WARRIOR && !PlayerbotAI::IsTank(bot))
+        return false;
+    if (!PlayerbotAI::IsTank(bot))
+        return false;
+    if (HoldPolicy(ai))
+        return false;   // "hold" in party chat parks the tank
+
+    Player* master = ai->GetMaster();
+    Group* group = bot->GetGroup();
+    if (!master || !group || !master->IsInWorld() || master->GetMapId() != bot->GetMapId())
+        return false;
+
+    // wait for the human: never advance further than ~35y from them
+    if (sServerFacade.GetDistance2d(bot, master) > 35.0f)
+    {
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;    // stand ground, don't run back either
+    }
+
+    // human-tank pacing checklist
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->getSource();
+        if (!member || !member->IsInWorld())
+            continue;
+        if (member->IsInCombat())
+            return false;
+        if (member->GetHealth() * 10 < member->GetMaxHealth() * 6)
+            return false;   // someone below 60% hp: wait
+        if (member->GetPowerType() == POWER_MANA &&
+            member->GetPower(POWER_MANA) * 2 < member->GetMaxPower(POWER_MANA))
+            return false;   // a mana user below 50%: let them drink
+    }
+
+    // next pack: nearest hostile in the master's heading cone
+    float heading = master->GetOrientation();
+    float hx = std::cos(heading), hy = std::sin(heading);
+    AiObjectContext* context = ai->GetAiObjectContext();
+    std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+    Unit* pick = nullptr;
+    float best = 45.0f;
+    for (const ObjectGuid& guid : possible)
+    {
+        Unit* candidate = ai->GetUnit(guid);
+        if (!candidate || sServerFacade.UnitIsDead(candidate) || candidate->IsInCombat())
+            continue;
+        if (candidate->IsPlayer())
+            continue;
+        float dx = candidate->GetPositionX() - master->GetPositionX();
+        float dy = candidate->GetPositionY() - master->GetPositionY();
+        float distance = std::sqrt(dx * dx + dy * dy);
+        if (distance < 1.0f || distance > best)
+            continue;
+        // inside the heading cone? (dot product against the facing vector)
+        if ((dx * hx + dy * hy) / distance < 0.25f)
+            continue;   // cos(~75°)
+        best = distance;
+        pick = candidate;
+    }
+    if (!pick)
+        return false;   // nothing ahead: turn to steer me
+
+    return EngagePull(ai, bot, pick);
+}
+
+// non-tank bots anchor on the TANK (he leads); the master steers by walking
+bool PartyExecutor::FollowLeader(PlayerbotAI* ai, Player* bot)
+{
+    Player* leader = ai->GetMaster();
+    if (Group* group = bot->GetGroup())
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (member && member != bot && member->IsInWorld() && member->IsAlive() &&
+                member->GetMapId() == bot->GetMapId() && PlayerbotAI::IsTank(member) &&
+                member->GetPlayerbotAI())
+            {
+                leader = member;
+                break;
+            }
+        }
+    if (!leader || leader == bot || !leader->IsInWorld() || leader->GetMapId() != bot->GetMapId())
+        return false;
+
+    if (sServerFacade.GetDistance2d(bot, leader) <= 5.0f)
+        return false;
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+        return false;   // already in tow
+
+    bot->GetMotionMaster()->MoveFollow(leader, 3.0f, M_PI_F * 0.7f);
+    ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+    return true;
+}
+
 void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
 {
     // directives are consumed out of combat too (pull orders arrive here)
     if (sDirectiveMgr.HasPending(bot->GetObjectGuid()))
         if (ai->DoSpecificAction("apply directive", Event(), true))
             return;
-
-    // tank initiates pulls with charge — never with a ranged weapon
-    if (TryChargePull(ai, bot))
-        return;
 
     // upkeep between pulls (humans drink; bots that never drink are a tell)
     if (bot->GetPowerType() == POWER_MANA && bot->GetPower(POWER_MANA) * 2 < bot->GetMaxPower(POWER_MANA))
@@ -109,14 +233,16 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         if (ai->DoSpecificAction("food", Event(), true))
             return;
 
-    // otherwise: stay with the human. No loot, no travel, no grind — ever.
-    Player* master = ai->GetMaster();
-    if (master && sServerFacade.GetDistance2d(bot, master) > 4.0f)
-    {
-        ai->DoSpecificAction("follow", Event(), true);
-        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+    // tank: skull/LLM pull orders first, then pull ON YOUR OWN
+    if (TryChargePull(ai, bot))
         return;
-    }
+    if (AutoAdvance(ai, bot))
+        return;
+
+    // everyone else: the tank leads, you follow him (master as fallback).
+    // No loot, no travel, no grind — ever.
+    if (FollowLeader(ai, bot))
+        return;
 
     ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
 }
@@ -286,6 +412,15 @@ bool PartyExecutor::BurnPolicy(PlayerbotAI* ai)
     Directive directive = ai->GetAiObjectContext()->GetValue<Directive>("directive")->Get();
     return directive.IsActiveNow(WorldTimer::getMSTime()) &&
            directive.cooldowns == CooldownPolicy::Burn;
+}
+
+// "hold" doubles as the pull brake: 'hold' in party chat pauses the tank's
+// auto-advance, 'go'/'keep pulling' (normal/burn) resumes it
+bool PartyExecutor::HoldPolicy(PlayerbotAI* ai)
+{
+    Directive directive = ai->GetAiObjectContext()->GetValue<Directive>("directive")->Get();
+    return directive.IsActiveNow(WorldTimer::getMSTime()) &&
+           directive.cooldowns == CooldownPolicy::Hold;
 }
 
 // good tanks turn the mob away from the party: stand on the FAR side of the
