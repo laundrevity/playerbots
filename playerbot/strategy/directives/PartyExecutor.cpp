@@ -80,6 +80,31 @@ namespace
         return true;
     }
 
+    // nearest enemy player classified healer by his talents (works for
+    // opponents: role detection reads the player's own spec)
+    Unit* NearestEnemyHealer(PlayerbotAI* ai, Player* bot)
+    {
+        AiObjectContext* context = ai->GetAiObjectContext();
+        std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+        Unit* best = nullptr;
+        float bestDistance = 40.0f;
+        for (const ObjectGuid& guid : possible)
+        {
+            Unit* candidate = ai->GetUnit(guid);
+            if (!candidate || !candidate->IsPlayer() || !candidate->IsAlive())
+                continue;
+            if (!PlayerbotAI::IsHeal((Player*)candidate))
+                continue;
+            float distance = sServerFacade.GetDistance2d(bot, candidate);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
     // ---- tank routes (encounters/party_routes.json, installed to etc/) ----
     // The offline DSL: map id -> ordered boss creature_template entries.
     // Spawn guid/position resolved once from the world DB.
@@ -585,6 +610,44 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         }
         if (bot->InArena() && !ai->HasAura("stealth", bot) && Cast(ai, "stealth", bot))
             return;
+
+        // arena, stealthed, out of combat (gates or a vanish reset): creep
+        // to the nearest enemy and open with cheap shot — never auto-attack
+        // out of stealth
+        if (bot->InArena() && ai->HasAura("stealth", bot))
+        {
+            AiObjectContext* stealthContext = ai->GetAiObjectContext();
+            std::list<ObjectGuid> possible = stealthContext->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+            Unit* enemy = nullptr;
+            float best = 60.0f;
+            for (const ObjectGuid& guid : possible)
+            {
+                Unit* candidate = ai->GetUnit(guid);
+                if (!candidate || !candidate->IsPlayer() || !candidate->IsAlive())
+                    continue;
+                float distance = sServerFacade.GetDistance2d(bot, candidate);
+                if (distance < best)
+                {
+                    best = distance;
+                    enemy = candidate;
+                }
+            }
+            if (enemy)
+            {
+                if (bot->CanReachWithMeleeAttack(enemy))
+                {
+                    if (Cast(ai, "cheap shot", enemy))
+                        return;
+                }
+                else
+                {
+                    bot->GetMotionMaster()->MovePoint(0, enemy->GetPositionX(), enemy->GetPositionY(),
+                                                      enemy->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                    ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+                    return;
+                }
+            }
+        }
     }
 
     // tank: skull/LLM pull orders first, then route the dungeon on your
@@ -949,17 +1012,62 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
     // ---- players are a different sport: control beats sustained dps ----
     if (target->IsPlayer())
     {
-        // opener out of stealth
-        if (ai->HasAura("stealth", bot) && Cast(ai, "cheap shot", target))
+        // survival: cloak purges the dots, vanish resets the fight,
+        // preparation refunds vanish when it's already spent
+        if (bot->GetHealthPercent() < 40.0f &&
+            bot->HasAuraType(SPELL_AURA_PERIODIC_DAMAGE) && Cast(ai, "cloak of shadows", bot))
             return true;
+        if (bot->GetHealthPercent() < 25.0f)
+        {
+            if (Cast(ai, "vanish", bot))
+                return true;
+            if (Cast(ai, "preparation", bot))
+                return true;
+        }
+
+        // the enemy healer is everyone's problem: kick his casts even
+        // off-target; blind him when the kill target enters the window
+        if (Unit* healer = NearestEnemyHealer(ai, bot))
+        {
+            if (healer != target)
+            {
+                if (healer->IsNonMeleeSpellCasted(false, true, true) &&
+                    bot->CanReachWithMeleeAttack(healer) && Cast(ai, "kick", healer))
+                    return true;
+                if (target->GetHealthPercent() < 50.0f &&
+                    !healer->HasAuraType(SPELL_AURA_MOD_STUN) &&
+                    !healer->HasAuraType(SPELL_AURA_MOD_CONFUSE) && Cast(ai, "blind", healer))
+                    return true;
+            }
+        }
+
+        // opener out of stealth (shadowstep bridges the gap when talented)
+        if (ai->HasAura("stealth", bot))
+        {
+            if (!bot->CanReachWithMeleeAttack(target) && Cast(ai, "shadowstep", target))
+                return true;
+            if (Cast(ai, "cheap shot", target))
+                return true;
+        }
+
+        // gouge is the backup interrupt once kick is down
+        if (target->IsNonMeleeSpellCasted(false, true, true) &&
+            !ai->CanCastSpell("kick", target, 0) && Cast(ai, "gouge", target))
+            return true;
+
         // stunlock: kidney at 3+ unless they're already stunned (DR waste)
         if (combo >= 3 && !target->HasAuraType(SPELL_AURA_MOD_STUN) && Cast(ai, "kidney shot", target))
             return true;
         if (combo >= 5 && Cast(ai, "eviscerate", target))
             return true;
         // stay glued to the kill target
-        if (!bot->CanReachWithMeleeAttack(target) && Cast(ai, "sprint", bot))
-            return true;
+        if (!bot->CanReachWithMeleeAttack(target))
+        {
+            if (Cast(ai, "shadowstep", target))
+                return true;
+            if (Cast(ai, "sprint", bot))
+                return true;
+        }
         if (Cast(ai, "sinister strike", target))
             return true;
         return false;
