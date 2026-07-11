@@ -55,6 +55,7 @@ namespace ai
         static bool MeleeGetBehind(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool TankFaceAway(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool TryChargePull(PlayerbotAI* ai, Player* bot);
+        static bool RouteAdvance(PlayerbotAI* ai, Player* bot);
         static bool AutoAdvance(PlayerbotAI* ai, Player* bot);
         static bool EngagePull(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool FollowLeader(PlayerbotAI* ai, Player* bot);

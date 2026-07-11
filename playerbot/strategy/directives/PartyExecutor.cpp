@@ -7,11 +7,18 @@
 #include "playerbot/strategy/directives/DirectiveMgr.h"
 #include "playerbot/strategy/directives/DirectiveValues.h"
 
+#include "playerbot/thirdparty/nlohmann/json.hpp"
+
 #include "Groups/Group.h"
+#include "Maps/Map.h"
 #include "MotionGenerators/MotionMaster.h"
+#include "MotionGenerators/PathFinder.h"
 #include "Util/Timer.h"
 
 #include <cmath>
+#include <fstream>
+#include <map>
+#include <vector>
 
 using namespace ai;
 
@@ -24,6 +31,93 @@ namespace
     // dps hold their specials above this fraction of the tank's threat
     // (TBC pulls aggro at 110% melee / 130% ranged; 0.9 leaves margin)
     constexpr float THREAT_CEILING = 0.9f;
+
+    // route legs and leashes (yards)
+    constexpr float ROUTE_LEASH = 35.0f;
+    constexpr float ROUTE_LEG = 25.0f;
+    constexpr float ROUTE_PULL_RANGE = 35.0f;
+
+    // the human tank's pacing checklist: nobody fighting, nobody low,
+    // mana users watered — shared by every pull-on-your-own mode
+    bool PartyReadyToPull(Group* group)
+    {
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (!member || !member->IsInWorld())
+                continue;
+            if (member->IsInCombat())
+                return false;
+            if (member->GetHealth() * 10 < member->GetMaxHealth() * 6)
+                return false;   // someone below 60% hp: wait
+            if (member->GetPowerType() == POWER_MANA &&
+                member->GetPower(POWER_MANA) * 2 < member->GetMaxPower(POWER_MANA))
+                return false;   // a mana user below 50%: let them drink
+        }
+        return true;
+    }
+
+    // ---- tank routes (encounters/party_routes.json, installed to etc/) ----
+    // The offline DSL: map id -> ordered boss creature_template entries.
+    // Spawn guid/position resolved once from the world DB.
+    struct RouteBoss
+    {
+        uint32 entry = 0;
+        uint32 dbguid = 0;
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+    };
+
+    std::map<uint32, std::vector<RouteBoss>> s_routes;
+    bool s_routesLoaded = false;
+
+    void LoadRoutes()
+    {
+        if (s_routesLoaded)
+            return;
+        s_routesLoaded = true;
+
+        // resolved like the aux confs: relative to cwd (bin/)
+        std::ifstream in("../etc/party_routes.json");
+        if (!in.is_open())
+            in.open("party_routes.json");
+        if (!in.is_open())
+            return;             // no routes: master-steered mode everywhere
+
+        nlohmann::json doc = nlohmann::json::parse(in, nullptr, false);
+        if (doc.is_discarded() || !doc.contains("routes") || !doc["routes"].is_object())
+        {
+            sLog.outError("PartyExecutor: party_routes.json unparseable — tank routing disabled");
+            return;
+        }
+
+        for (const auto& item : doc["routes"].items())
+        {
+            uint32 mapId = uint32(atoi(item.key().c_str()));
+            if (!item.value().contains("bosses") || !item.value()["bosses"].is_array())
+                continue;
+            for (const auto& entryNode : item.value()["bosses"])
+            {
+                if (!entryNode.is_number_unsigned())
+                    continue;
+                RouteBoss boss;
+                boss.entry = entryNode.get<uint32>();
+                auto result = WorldDatabase.PQuery(
+                    "SELECT guid, position_x, position_y, position_z FROM creature "
+                    "WHERE id = %u AND map = %u LIMIT 1", boss.entry, mapId);
+                if (!result)
+                {
+                    sLog.outError("PartyExecutor: route map %u boss entry %u has no spawn — skipped", mapId, boss.entry);
+                    continue;
+                }
+                Field* fields = result->Fetch();
+                boss.dbguid = fields[0].GetUInt32();
+                boss.x = fields[1].GetFloat();
+                boss.y = fields[2].GetFloat();
+                boss.z = fields[3].GetFloat();
+                s_routes[mapId].push_back(boss);
+            }
+        }
+    }
 }
 
 bool PartyExecutor::ShouldOwn(PlayerbotAI* ai, Player* bot)
@@ -96,8 +190,9 @@ bool PartyExecutor::EngagePull(PlayerbotAI* ai, Player* bot, Unit* target)
     float distance = sServerFacade.GetDistance2d(bot, target);
     if (distance > 24.0f)
     {
+        // always RUN to a pull — a lingering walk flag must never slow it
         bot->GetMotionMaster()->MovePoint(0, target->GetPositionX(), target->GetPositionY(),
-                                          target->GetPositionZ());
+                                          target->GetPositionZ(), FORCED_MOVEMENT_RUN);
         ai->SetAIInternalUpdateDelay(AFTER_CAST_DELAY_MS);
         return true;
     }
@@ -115,6 +210,129 @@ bool PartyExecutor::EngagePull(PlayerbotAI* ai, Player* bot, Unit* target)
     if (!bot->CanReachWithMeleeAttack(target))
         ai->DoSpecificAction("reach melee", Event(), true);
     ai->SetAIInternalUpdateDelay(AFTER_CAST_DELAY_MS);
+    return true;
+}
+
+// The tank WALKS POINT in a routed dungeon: the objective is the first
+// still-alive boss in encounters/party_routes.json order; he advances toward
+// it in mmap-path legs, pulls whatever stands in the way, and never outruns
+// the group. The master no longer steers — stopping out of leash range (or
+// saying "hold") is the human's brake.
+bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
+{
+    if (!PlayerbotAI::IsTank(bot))
+        return false;
+    if (HoldPolicy(ai))
+        return false;   // "hold" in party chat parks the tank
+
+    Map* map = bot->GetMap();
+    if (!map || !map->IsDungeon())
+        return false;
+
+    LoadRoutes();
+    auto routeItr = s_routes.find(bot->GetMapId());
+    if (routeItr == s_routes.end() || routeItr->second.empty())
+        return false;   // no route for this map: master-steered mode
+
+    Player* master = ai->GetMaster();
+    Group* group = bot->GetGroup();
+    if (!master || !group || !master->IsInWorld() || master->GetMapId() != bot->GetMapId())
+        return false;
+
+    // wait for the human: never advance further than the leash
+    if (sServerFacade.GetDistance2d(bot, master) > ROUTE_LEASH)
+    {
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;    // stand ground, don't run back either
+    }
+
+    // party not topped: hold position while they drink (don't drift home)
+    if (!PartyReadyToPull(group))
+    {
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;
+    }
+
+    // objective: first boss in route order that is not confirmed dead
+    const RouteBoss* objective = nullptr;
+    Unit* objectiveUnit = nullptr;
+    for (const RouteBoss& boss : routeItr->second)
+    {
+        Creature* creature = map->GetCreature(ObjectGuid(HIGHGUID_UNIT, boss.entry, boss.dbguid));
+        if (creature && creature->IsDead())
+            continue;
+        objective = &boss;
+        objectiveUnit = creature;   // null until his grid loads: head for the spawn
+        break;
+    }
+    if (!objective)
+        return false;   // route cleared — dungeon done
+
+    float objX = objectiveUnit ? objectiveUnit->GetPositionX() : objective->x;
+    float objY = objectiveUnit ? objectiveUnit->GetPositionY() : objective->y;
+    float objZ = objectiveUnit ? objectiveUnit->GetPositionZ() : objective->z;
+
+    // clear what stands in the way: nearest out-of-combat hostile inside a
+    // ~75° cone from the TANK toward the objective (includes the boss when
+    // the group finally fronts him)
+    float dxo = objX - bot->GetPositionX(), dyo = objY - bot->GetPositionY();
+    float dobj = std::sqrt(dxo * dxo + dyo * dyo);
+    float hx = dobj > 0.1f ? dxo / dobj : std::cos(bot->GetOrientation());
+    float hy = dobj > 0.1f ? dyo / dobj : std::sin(bot->GetOrientation());
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+    Unit* pick = nullptr;
+    float best = ROUTE_PULL_RANGE;
+    for (const ObjectGuid& guid : possible)
+    {
+        Unit* candidate = ai->GetUnit(guid);
+        if (!candidate || sServerFacade.UnitIsDead(candidate) || candidate->IsInCombat())
+            continue;
+        if (candidate->IsPlayer())
+            continue;
+        float dx = candidate->GetPositionX() - bot->GetPositionX();
+        float dy = candidate->GetPositionY() - bot->GetPositionY();
+        float distance = std::sqrt(dx * dx + dy * dy);
+        if (distance < 1.0f || distance > best)
+            continue;
+        if ((dx * hx + dy * hy) / distance < 0.25f)
+            continue;   // outside the cone
+        best = distance;
+        pick = candidate;
+    }
+    if (pick)
+        return EngagePull(ai, bot, pick);
+
+    // clean road: advance one leg along the mmap path
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+    {
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;    // leg already in progress
+    }
+
+    PathFinder pathfinder(bot);
+    pathfinder.calculate(objX, objY, objZ, false);
+    if (pathfinder.getPathType() & PATHFIND_NOPATH)
+        return false;
+
+    // farthest path point inside one leg — short legs keep him checkable
+    const PointsArray& points = pathfinder.getPath();
+    G3D::Vector3 leg;
+    bool haveLeg = false;
+    for (const G3D::Vector3& point : points)
+    {
+        float dx = point.x - bot->GetPositionX(), dy = point.y - bot->GetPositionY();
+        if (std::sqrt(dx * dx + dy * dy) > ROUTE_LEG)
+            break;
+        leg = point;
+        haveLeg = true;
+    }
+    if (!haveLeg)
+        return false;
+
+    bot->GetMotionMaster()->MovePoint(0, leg.x, leg.y, leg.z, FORCED_MOVEMENT_RUN);
+    ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
     return true;
 }
 
@@ -144,19 +362,8 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
     }
 
     // human-tank pacing checklist
-    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
-    {
-        Player* member = itr->getSource();
-        if (!member || !member->IsInWorld())
-            continue;
-        if (member->IsInCombat())
-            return false;
-        if (member->GetHealth() * 10 < member->GetMaxHealth() * 6)
-            return false;   // someone below 60% hp: wait
-        if (member->GetPowerType() == POWER_MANA &&
-            member->GetPower(POWER_MANA) * 2 < member->GetMaxPower(POWER_MANA))
-            return false;   // a mana user below 50%: let them drink
-    }
+    if (!PartyReadyToPull(group))
+        return false;
 
     // next pack: nearest hostile in the master's heading cone
     float heading = master->GetOrientation();
@@ -233,8 +440,11 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         if (ai->DoSpecificAction("food", Event(), true))
             return;
 
-    // tank: skull/LLM pull orders first, then pull ON YOUR OWN
+    // tank: skull/LLM pull orders first, then route the dungeon on your
+    // own; master-steered advance is the fallback outside routed maps
     if (TryChargePull(ai, bot))
+        return;
+    if (RouteAdvance(ai, bot))
         return;
     if (AutoAdvance(ai, bot))
         return;
