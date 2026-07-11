@@ -196,6 +196,9 @@ void ShotCaller::OnPartyChat(Player* master, uint32 type, const std::string& tex
     prompt << "Party bots:\n" << roster.str();
     prompt << "Human: " << job.masterName << " (" << ClassName(master->getClass()) << ", healer)\n";
     prompt << "Visible targets:\n" << (count ? targets.str() : "(none)\n");
+    if (master->InArena())
+        prompt << "Context: RATED ARENA — the listed targets are enemy players. Call kill-target "
+                  "swaps, cc and cooldown burns; killing any one enemy usually wins the match.\n";
     prompt << "Party chat from " << job.masterName << ": \"" << text << "\"\n";
     prompt << "Emit directives for the bots (skip bots that should just carry on) and a reply.";
     job.userPrompt = prompt.str();

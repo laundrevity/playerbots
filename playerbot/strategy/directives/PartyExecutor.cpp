@@ -128,8 +128,8 @@ bool PartyExecutor::ShouldOwn(PlayerbotAI* ai, Player* bot)
         return false;
     if (!ai->HasRealPlayerMaster())
         return false;
-    if (bot->InBattleGround())
-        return false;   // bg/arena keep the old brain (separately tuned)
+    if (bot->InBattleGround() && !bot->InArena())
+        return false;   // regular bgs keep the old brain; ARENAS are ours
     if (!bot->IsAlive())
         return false;   // the module's dead-state engine handles release/rez
     return true;
@@ -709,6 +709,26 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
             nearest = attacker;
         }
     }
+    if (nearest)
+        return nearest;
+
+    // 3e. arena: nobody engaged yet — the nearest enemy player IS the fight
+    if (bot->InArena())
+    {
+        std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+        for (const ObjectGuid& guid : possible)
+        {
+            Unit* candidate = ai->GetUnit(guid);
+            if (!candidate || !candidate->IsPlayer() || sServerFacade.UnitIsDead(candidate))
+                continue;
+            float distance = sServerFacade.GetDistance2d(bot, candidate);
+            if (distance < best)
+            {
+                best = distance;
+                nearest = candidate;
+            }
+        }
+    }
     return nearest;
 }
 
@@ -994,6 +1014,37 @@ bool PartyExecutor::RetPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target)
     return false;
 }
 
+bool PartyExecutor::ArmsWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
+{
+    if (ThreatCapped(ai, bot, target))
+    {
+        ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+        return true;
+    }
+
+    if (!ai->HasAura("battle stance", bot) && Cast(ai, "battle stance", bot))
+        return true;
+
+    if (BurnPolicy(ai) && Cast(ai, "death wish", bot))
+        return true;
+
+    // players get snared before anything else (kite control beats damage)
+    if (target->IsPlayer() && !ai->HasAura("hamstring", target) && Cast(ai, "hamstring", target))
+        return true;
+
+    if (target->GetHealthPercent() < 20.0f && Cast(ai, "execute", target))
+        return true;
+
+    if (Cast(ai, "mortal strike", target))
+        return true;
+
+    // rage dump only above the MS reserve
+    if (bot->GetPower(POWER_RAGE) > 60 && Cast(ai, "heroic strike", target))
+        return true;
+
+    return false;
+}
+
 bool PartyExecutor::ProtPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target)
 {
     // Righteous Fury is the tank switch (+90% holy threat): without it every
@@ -1039,6 +1090,11 @@ bool PartyExecutor::ProtPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target)
 
 void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
 {
+    // 0. break hard cc with the pvp medallion (action self-gates: only
+    // fires while stunned/feared/charmed/confused and off cooldown)
+    if (ai->DoSpecificAction("use pvp trinket", Event(), true))
+        return;
+
     // 1. standing cc duty from the seam
     if (KeepCcApplied(ai, bot))
         return;
@@ -1064,7 +1120,8 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     bool acted = false;
     switch (bot->getClass())
     {
-        case CLASS_WARRIOR: acted = PlayerbotAI::IsTank(bot) ? TankWarriorTick(ai, bot, target) : false; break;
+        case CLASS_WARRIOR: acted = PlayerbotAI::IsTank(bot) ? TankWarriorTick(ai, bot, target)
+                                                            : ArmsWarriorTick(ai, bot, target); break;
         case CLASS_ROGUE:   acted = RogueTick(ai, bot, target); break;
         case CLASS_MAGE:    acted = MageTick(ai, bot, target); break;
         case CLASS_PALADIN: acted = PlayerbotAI::IsTank(bot) ? ProtPaladinTick(ai, bot, target)
