@@ -44,6 +44,9 @@ namespace
         "- Give each bot only what it needs; an empty kill_order means 'carry on as you were'.\n"
         "- cooldowns: hold = save everything, normal = standard, burn = use offensive cooldowns.\n"
         "- cc only when asked or clearly right (mage=Polymorph, rogue=Sap before combat).\n"
+        "- directives may only name the LISTED BOTS — never the human.\n"
+        "- sometimes you get a Situation line instead of chat: that is you noticing the fight "
+        "state on your own — make the call unprompted.\n"
         "- reply: ONE short casual party-chat answer, like a terse guildmate (max 12 words, "
         "no roleplay flourishes, no emoji).";
 
@@ -136,6 +139,83 @@ void ShotCaller::OnPartyChat(Player* master, uint32 type, const std::string& tex
     m_lastText = text;
     m_lastMs = now;
 
+    Submit(master, text, false);
+}
+
+void ShotCaller::ArenaTick(PlayerbotAI* ai, Player* bot)
+{
+    if (!sPlayerbotAIConfig.shotCallerEnabled || !sPlayerbotAIConfig.directiveEnabled)
+        return;
+    if (!bot->InArena())
+        return;
+
+    Player* master = ai->GetMaster();
+    if (!master || master == bot || !master->IsInWorld())
+        return;
+
+    constexpr uint32 AUTO_CALL_GAP_MS = 8000;       // one autonomous call per gap
+    constexpr uint32 AUTO_RECALL_GAP_MS = 20000;    // same subject not re-called sooner
+
+    uint32 now = WorldTimer::getMSTime();
+    uint32 last = m_lastAutoMs.load();
+    if (last && WorldTimer::getMSTimeDiff(last, now) < AUTO_CALL_GAP_MS)
+        return;
+
+    // edge triggers, most urgent first: a kill window, then an ally folding
+    std::ostringstream reason;
+    uint32 subject = 0;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+    for (const ObjectGuid& guid : possible)
+    {
+        Unit* enemy = ai->GetUnit(guid);
+        if (!enemy || !enemy->IsPlayer() || !enemy->IsAlive())
+            continue;
+        if (enemy->GetHealthPercent() < 35.0f)
+        {
+            reason << "Enemy " << enemy->GetName() << " is at " << uint32(enemy->GetHealthPercent())
+                   << "% hp — kill window.";
+            subject = guid.GetCounter();
+            break;
+        }
+    }
+    if (!subject)
+    {
+        if (Group* group = bot->GetGroup())
+        {
+            for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                Player* member = itr->getSource();
+                if (!member || !member->IsInWorld() || !member->IsAlive())
+                    continue;
+                if (member->GetHealthPercent() < 40.0f)
+                {
+                    reason << "Our " << member->GetName() << " is at " << uint32(member->GetHealthPercent())
+                           << "% hp and under pressure — call the response.";
+                    subject = member->GetObjectGuid().GetCounter();
+                    break;
+                }
+            }
+        }
+    }
+    if (!subject)
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        uint32& stamp = m_recentAutoCalls[subject];
+        if (stamp && WorldTimer::getMSTimeDiff(stamp, now) < AUTO_RECALL_GAP_MS)
+            return;
+        stamp = now;
+    }
+    m_lastAutoMs.store(now);
+
+    Submit(master, reason.str(), true);
+}
+
+void ShotCaller::Submit(Player* master, const std::string& text, bool synthetic)
+{
     Group* group = master->GetGroup();
     if (!group)
         return;
@@ -199,7 +279,10 @@ void ShotCaller::OnPartyChat(Player* master, uint32 type, const std::string& tex
     if (master->InArena())
         prompt << "Context: RATED ARENA — the listed targets are enemy players. Call kill-target "
                   "swaps, cc and cooldown burns; killing any one enemy usually wins the match.\n";
-    prompt << "Party chat from " << job.masterName << ": \"" << text << "\"\n";
+    if (synthetic)
+        prompt << "Situation (no chat from the human — you noticed this yourself): \"" << text << "\"\n";
+    else
+        prompt << "Party chat from " << job.masterName << ": \"" << text << "\"\n";
     prompt << "Emit directives for the bots (skip bots that should just carry on) and a reply.";
     job.userPrompt = prompt.str();
 

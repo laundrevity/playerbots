@@ -6,6 +6,7 @@
 #include "playerbot/ServerFacade.h"
 #include "playerbot/strategy/directives/DirectiveMgr.h"
 #include "playerbot/strategy/directives/DirectiveValues.h"
+#include "playerbot/strategy/directives/ShotCaller.h"
 
 #include "playerbot/thirdparty/nlohmann/json.hpp"
 
@@ -1255,6 +1256,10 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     // fires while stunned/feared/charmed/confused and off cooldown)
     if (ai->DoSpecificAction("use pvp trinket", Event(), true))
         return;
+
+    // arena: the shot-caller watches the fight and calls plays unprompted
+    // (edge-triggered + rate-limited inside; snapshot only, never blocks)
+    sShotCaller.ArenaTick(ai, bot);
 
     // 1. standing cc duty from the seam
     if (KeepCcApplied(ai, bot))

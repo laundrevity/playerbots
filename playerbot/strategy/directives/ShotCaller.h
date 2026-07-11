@@ -13,8 +13,10 @@
 
 #include "Entities/ObjectGuid.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -22,6 +24,7 @@
 #include <vector>
 
 class Player;
+class PlayerbotAI;
 
 namespace ai
 {
@@ -35,8 +38,15 @@ namespace ai
         // HandleCommand) — deduped internally to one LLM call per line.
         void OnPartyChat(Player* master, uint32 type, const std::string& text);
 
+        // autonomous calls (arena): edge-triggered on kill windows and
+        // allies under pressure, globally rate-limited. Called from the
+        // executor's combat tick; cheap when nothing has changed.
+        void ArenaTick(PlayerbotAI* ai, Player* bot);
+
     private:
         ShotCaller() = default;
+
+        void Submit(Player* master, const std::string& line, bool synthetic);
 
         struct Job
         {
@@ -61,6 +71,11 @@ namespace ai
         ObjectGuid m_lastMaster;
         std::string m_lastText;
         uint32 m_lastMs = 0;
+
+        // autonomous-call pacing (map threads): one call per gap, and the
+        // same subject (enemy low / ally low) isn't re-called for a while
+        std::atomic<uint32> m_lastAutoMs{0};
+        std::map<uint32, uint32> m_recentAutoCalls;     // guid counter -> ms
     };
 }
 
