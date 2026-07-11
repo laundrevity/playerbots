@@ -205,6 +205,11 @@ bool PartyExecutor::EngagePull(PlayerbotAI* ai, Player* bot, Unit* target)
         if (Cast(ai, "charge", target))
             return true;
     }
+    // prot paladin: Avenger's Shield is the ranged pull (falls through to a
+    // body-pull when untalented/unknown)
+    if (bot->getClass() == CLASS_PALADIN && distance >= 8.0f && distance <= 30.0f)
+        if (Cast(ai, "avenger's shield", target))
+            return true;
     // in melee (or charge unavailable): open by hitting it
     AiObjectContext* context = ai->GetAiObjectContext();
     context->GetValue<Unit*>("current target")->Set(target);
@@ -227,6 +232,11 @@ bool PartyExecutor::KeepPartyBuffed(PlayerbotAI* ai, Player* bot)
     uint8 cls = bot->getClass();
     if (cls != CLASS_MAGE && cls != CLASS_PALADIN && cls != CLASS_PRIEST && cls != CLASS_DRUID)
         return false;
+
+    // prot paladin: Righteous Fury goes up before the first pull, not after
+    if (cls == CLASS_PALADIN && PlayerbotAI::IsTank(bot) &&
+        !ai->HasAura("righteous fury", bot) && Cast(ai, "righteous fury", bot))
+        return true;
 
     for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
@@ -954,6 +964,49 @@ bool PartyExecutor::RetPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target)
     return false;
 }
 
+bool PartyExecutor::ProtPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target)
+{
+    // Righteous Fury is the tank switch (+90% holy threat): without it every
+    // heal outthreats him — nothing else in this rotation matters first
+    if (!ai->HasAura("righteous fury", bot) && Cast(ai, "righteous fury", bot))
+        return true;
+
+    // rescue: Righteous Defense taunts mobs off the teammate they're eating
+    // (it targets the ALLY, and pulls up to 3 mobs back)
+    if (Unit* loose = LooseMobOnParty(ai, bot))
+        if (Unit* victim = loose->GetVictim())
+            if (victim != bot && victim->IsPlayer() && Cast(ai, "righteous defense", victim))
+                return true;
+
+    // TBC prot threat priority: Holy Shield > Judgement (of Righteousness)
+    // > Avenger's Shield > Consecration (wowhead/tavern prot guides)
+    if (Cast(ai, "holy shield", bot))
+        return true;
+
+    if (!ai->HasAura("seal of righteousness", bot) && !ai->HasAura("seal of vengeance", bot))
+        if (Cast(ai, "seal of righteousness", bot) || Cast(ai, "seal of vengeance", bot))
+            return true;
+
+    if (Cast(ai, "judgement", target))
+    {
+        // judgement consumes the seal: reseal immediately (off-GCD)
+        if (!Cast(ai, "seal of righteousness", bot))
+            Cast(ai, "seal of vengeance", bot);
+        return true;
+    }
+
+    if (Cast(ai, "avenger's shield", target))
+        return true;
+
+    // consecration is the pack glue; stop below a third mana so Spiritual
+    // Attunement income keeps the loop alive
+    if (bot->GetPower(POWER_MANA) * 3 > bot->GetMaxPower(POWER_MANA) &&
+        Cast(ai, "consecration", bot))
+        return true;
+
+    return false;
+}
+
 void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
 {
     // 1. standing cc duty from the seam
@@ -984,7 +1037,8 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
         case CLASS_WARRIOR: acted = PlayerbotAI::IsTank(bot) ? TankWarriorTick(ai, bot, target) : false; break;
         case CLASS_ROGUE:   acted = RogueTick(ai, bot, target); break;
         case CLASS_MAGE:    acted = MageTick(ai, bot, target); break;
-        case CLASS_PALADIN: acted = RetPaladinTick(ai, bot, target); break;
+        case CLASS_PALADIN: acted = PlayerbotAI::IsTank(bot) ? ProtPaladinTick(ai, bot, target)
+                                                            : RetPaladinTick(ai, bot, target); break;
         default:            acted = false; break;
     }
 
