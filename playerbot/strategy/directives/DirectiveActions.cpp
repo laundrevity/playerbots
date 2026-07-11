@@ -197,6 +197,17 @@ bool MaintainAction::Execute(Event& event)
 
     factory.EnchantEquipment();                    // per-spec enchant template
     factory.InitGems();                            // fill empty sockets
+
+    // rogues run dry: keep a stack of each poison in the bags
+    // (Instant VII 21927 / Deadly VII 22054 — the executor applies them)
+    if (bot->getClass() == CLASS_ROGUE)
+    {
+        if (!bot->HasItemCount(21927, 5))
+            bot->StoreNewItemInBestSlots(21927, 20);
+        if (!bot->HasItemCount(22054, 5))
+            bot->StoreNewItemInBestSlots(22054, 20);
+    }
+
     bot->SaveToDB();
 
     std::ostringstream out;

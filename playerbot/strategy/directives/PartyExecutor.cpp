@@ -59,6 +59,27 @@ namespace
         return true;
     }
 
+    // rogue poison upkeep (DB-verified 2.4.3 top ranks)
+    constexpr uint32 INSTANT_POISON_VII = 21927;    // -> enchant 2641 (MH)
+    constexpr uint32 DEADLY_POISON_VII = 22054;     // -> enchant 2643 (OH)
+    constexpr uint32 INSTANT_POISON_ENCHANT = 2641;
+    constexpr uint32 DEADLY_POISON_ENCHANT = 2643;
+
+    // consume a bag poison and put it on the blade, like a player would
+    bool ApplyPoisonTo(Player* bot, uint8 slot, uint32 itemId, uint32 enchantId, uint32 charges)
+    {
+        Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!weapon || weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT))
+            return false;
+        if (!bot->HasItemCount(itemId, 1))
+            return false;
+        bot->ApplyEnchantment(weapon, TEMP_ENCHANTMENT_SLOT, false);
+        weapon->SetEnchantment(TEMP_ENCHANTMENT_SLOT, enchantId, 3600 * IN_MILLISECONDS, charges);
+        bot->ApplyEnchantment(weapon, TEMP_ENCHANTMENT_SLOT, true);
+        bot->DestroyItemCount(itemId, 1, true);
+        return true;
+    }
+
     // ---- tank routes (encounters/party_routes.json, installed to etc/) ----
     // The offline DSL: map id -> ordered boss creature_template entries.
     // Spawn guid/position resolved once from the world DB.
@@ -553,10 +574,18 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
     if (KeepPartyBuffed(ai, bot))
         return;
 
-    // rogue: stealth up before the fight finds you (arena prep especially)
-    if (bot->getClass() == CLASS_ROGUE && bot->InArena() &&
-        !ai->HasAura("stealth", bot) && Cast(ai, "stealth", bot))
-        return;
+    // rogue: poisons on both blades, then stealth before the fight finds you
+    if (bot->getClass() == CLASS_ROGUE)
+    {
+        if (ApplyPoisonTo(bot, EQUIPMENT_SLOT_MAINHAND, INSTANT_POISON_VII, INSTANT_POISON_ENCHANT, 40) ||
+            ApplyPoisonTo(bot, EQUIPMENT_SLOT_OFFHAND, DEADLY_POISON_VII, DEADLY_POISON_ENCHANT, 30))
+        {
+            ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+            return;
+        }
+        if (bot->InArena() && !ai->HasAura("stealth", bot) && Cast(ai, "stealth", bot))
+            return;
+    }
 
     // tank: skull/LLM pull orders first, then route the dungeon on your
     // own; master-steered advance is the fallback outside routed maps
