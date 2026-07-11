@@ -553,6 +553,11 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
     if (KeepPartyBuffed(ai, bot))
         return;
 
+    // rogue: stealth up before the fight finds you (arena prep especially)
+    if (bot->getClass() == CLASS_ROGUE && bot->InArena() &&
+        !ai->HasAura("stealth", bot) && Cast(ai, "stealth", bot))
+        return;
+
     // tank: skull/LLM pull orders first, then route the dungeon on your
     // own; master-steered advance is the fallback outside routed maps
     if (TryChargePull(ai, bot))
@@ -911,6 +916,25 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
     }
 
     uint8 combo = bot->GetComboPoints();
+
+    // ---- players are a different sport: control beats sustained dps ----
+    if (target->IsPlayer())
+    {
+        // opener out of stealth
+        if (ai->HasAura("stealth", bot) && Cast(ai, "cheap shot", target))
+            return true;
+        // stunlock: kidney at 3+ unless they're already stunned (DR waste)
+        if (combo >= 3 && !target->HasAuraType(SPELL_AURA_MOD_STUN) && Cast(ai, "kidney shot", target))
+            return true;
+        if (combo >= 5 && Cast(ai, "eviscerate", target))
+            return true;
+        // stay glued to the kill target
+        if (!bot->CanReachWithMeleeAttack(target) && Cast(ai, "sprint", bot))
+            return true;
+        if (Cast(ai, "sinister strike", target))
+            return true;
+        return false;
+    }
 
     // Slice and Dice uptime is the whole spec (icy-veins combat rogue)
     if (combo >= 2 && !ai->HasAura("slice and dice", bot) && Cast(ai, "slice and dice", target))
