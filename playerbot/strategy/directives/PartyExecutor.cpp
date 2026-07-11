@@ -516,6 +516,9 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         { "guild accept",      "guild accept" },
         { "arena team invite", "arena team accept" },
         { "trade status",      "accept trade" },
+        { "bg status",         "bg status" },      // queue pops + arena ports
+        { "ready check",       "ready check" },
+        { "uninvite",          "uninvite" },
     };
     AiObjectContext* socialContext = ai->GetAiObjectContext();
     for (const auto& social : SOCIAL)
