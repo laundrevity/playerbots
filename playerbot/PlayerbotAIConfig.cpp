@@ -8,6 +8,7 @@
 #include "World/WorldState.h"
 #include "playerbot/PlayerbotHelpMgr.h"
 #include "playerbot/strategy/actions/CheatAction.h"
+#include "playerbot/strategy/directives/PartyExecutor.h"
 
 #include "playerbot/TravelMgr.h"
 
@@ -662,6 +663,7 @@ bool PlayerbotAIConfig::Initialize()
 
     // bot-brains party executor
     executorEnabled = config.GetIntDefault("AiPlayerbot.Executor.Enabled", 1);
+    ai::PartyExecutor::ReloadRoutes();  // ".bot reload" also refreshes party_routes.json
 
     //LLM START
     llmEnabled = config.GetIntDefault("AiPlayerbot.LLMEnabled", 1);

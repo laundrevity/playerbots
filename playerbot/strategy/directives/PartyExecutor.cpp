@@ -13,6 +13,8 @@
 #include "Maps/Map.h"
 #include "MotionGenerators/MotionMaster.h"
 #include "MotionGenerators/PathFinder.h"
+#include "Movement/MoveSpline.h"
+#include "Movement/MoveSplineInit.h"
 #include "Util/Timer.h"
 
 #include <cmath>
@@ -32,9 +34,9 @@ namespace
     // (TBC pulls aggro at 110% melee / 130% ranged; 0.9 leaves margin)
     constexpr float THREAT_CEILING = 0.9f;
 
-    // route legs and leashes (yards)
+    // route chunks and leashes (yards)
     constexpr float ROUTE_LEASH = 35.0f;
-    constexpr float ROUTE_LEG = 25.0f;
+    constexpr float ROUTE_CHUNK = 80.0f;    // one smooth spline per chunk
     constexpr float ROUTE_PULL_RANGE = 35.0f;
 
     // the human tank's pacing checklist: nobody fighting, nobody low,
@@ -304,36 +306,36 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     if (pick)
         return EngagePull(ai, bot, pick);
 
-    // clean road: advance one leg along the mmap path
-    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+    // clean road: keep one smooth spline running along the mmap path —
+    // point-move legs stutter at every boundary and read as bad pathing
+    if (!bot->movespline->Finalized())
     {
         ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
-        return true;    // leg already in progress
+        return true;    // chunk in progress
     }
 
     PathFinder pathfinder(bot);
+    pathfinder.setPathLengthLimit(ROUTE_CHUNK);
     pathfinder.calculate(objX, objY, objZ, false);
     if (pathfinder.getPathType() & PATHFIND_NOPATH)
         return false;
 
-    // farthest path point inside one leg — short legs keep him checkable
     const PointsArray& points = pathfinder.getPath();
-    G3D::Vector3 leg;
-    bool haveLeg = false;
-    for (const G3D::Vector3& point : points)
-    {
-        float dx = point.x - bot->GetPositionX(), dy = point.y - bot->GetPositionY();
-        if (std::sqrt(dx * dx + dy * dy) > ROUTE_LEG)
-            break;
-        leg = point;
-        haveLeg = true;
-    }
-    if (!haveLeg)
+    if (points.size() < 2)
         return false;
 
-    bot->GetMotionMaster()->MovePoint(0, leg.x, leg.y, leg.z, FORCED_MOVEMENT_RUN);
+    Movement::MoveSplineInit init(*bot);
+    init.MovebyPath(points);
+    init.SetWalk(false);
+    init.Launch();
     ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
     return true;
+}
+
+void PartyExecutor::ReloadRoutes()
+{
+    s_routesLoaded = false;
+    s_routes.clear();   // next dungeon tick re-reads party_routes.json
 }
 
 // The tank pulls ON HIS OWN. The human's facing is the route intent: the

@@ -39,6 +39,7 @@ namespace ai
     public:
         static bool ShouldOwn(PlayerbotAI* ai, Player* bot);
         static void Tick(PlayerbotAI* ai, Player* bot);
+        static void ReloadRoutes();     // ".bot reload" re-reads party_routes.json
 
     private:
         static void CombatTick(PlayerbotAI* ai, Player* bot);
