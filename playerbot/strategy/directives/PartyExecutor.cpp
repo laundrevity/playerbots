@@ -506,6 +506,33 @@ bool PartyExecutor::FollowLeader(PlayerbotAI* ai, Player* bot)
 
 void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
 {
+    // social reactions the retired strategy engine used to service — the
+    // executor answers them itself (party/guild/arena invites, charter
+    // signatures, trades). Packet handlers arm these triggers upstream in
+    // UpdateAIInternal; without this loop the events rot unanswered.
+    static const struct { const char* trigger; const char* action; } SOCIAL[] = {
+        { "group invite",      "accept invitation" },
+        { "petition offer",    "petition sign" },
+        { "guild accept",      "guild accept" },
+        { "arena team invite", "arena team accept" },
+        { "trade status",      "accept trade" },
+    };
+    AiObjectContext* socialContext = ai->GetAiObjectContext();
+    for (const auto& social : SOCIAL)
+    {
+        Trigger* trigger = socialContext->GetTrigger(social.trigger);
+        if (!trigger)
+            continue;
+        Event socialEvent = trigger->Check();
+        if (socialEvent.getSource().empty())
+            continue;
+        trigger->Reset();
+        ai->DoSpecificAction(social.action, socialEvent, true);
+        if (!strcmp(social.trigger, "trade status"))
+            ai->DoSpecificAction("equip upgrades", Event(), true);
+        return;
+    }
+
     // directives are consumed out of combat too (pull orders arrive here)
     if (sDirectiveMgr.HasPending(bot->GetObjectGuid()))
         if (ai->DoSpecificAction("apply directive", Event(), true))
