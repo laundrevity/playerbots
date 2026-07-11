@@ -215,6 +215,73 @@ bool PartyExecutor::EngagePull(PlayerbotAI* ai, Player* bot, Unit* target)
     return true;
 }
 
+// Out-of-combat buff round: every class keeps its party buffs up, and a
+// buff is only cast into an EMPTY slot — the human's own blessings/buffs
+// are never overwritten (complementary, not authoritative).
+bool PartyExecutor::KeepPartyBuffed(PlayerbotAI* ai, Player* bot)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
+
+    uint8 cls = bot->getClass();
+    if (cls != CLASS_MAGE && cls != CLASS_PALADIN && cls != CLASS_PRIEST && cls != CLASS_DRUID)
+        return false;
+
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->getSource();
+        if (!member || !member->IsInWorld() || !member->IsAlive() ||
+            member->GetMapId() != bot->GetMapId() ||
+            sServerFacade.GetDistance2d(bot, member) > 30.0f)
+            continue;
+
+        switch (cls)
+        {
+            case CLASS_MAGE:
+                if (member->GetPowerType() == POWER_MANA && !ai->HasAura("arcane intellect", member) &&
+                    !ai->HasAura("arcane brilliance", member))
+                    if (Cast(ai, "arcane intellect", member))
+                        return true;
+                break;
+            case CLASS_PALADIN:
+            {
+                // one blessing per paladin; skip anyone already blessed
+                if (ai->HasAura("blessing of might", member) || ai->HasAura("blessing of wisdom", member) ||
+                    ai->HasAura("blessing of kings", member) || ai->HasAura("blessing of salvation", member) ||
+                    ai->HasAura("blessing of light", member) || ai->HasAura("blessing of sanctuary", member) ||
+                    ai->HasAura("greater blessing of might", member) || ai->HasAura("greater blessing of wisdom", member) ||
+                    ai->HasAura("greater blessing of kings", member) || ai->HasAura("greater blessing of salvation", member))
+                    break;
+                // physical classes get Might, mana users get Wisdom;
+                // a paladin gets Might only if he IS this ret bot
+                bool physical = member->getClass() == CLASS_WARRIOR || member->getClass() == CLASS_ROGUE ||
+                                member->getClass() == CLASS_HUNTER || member == bot;
+                if (Cast(ai, physical ? "blessing of might" : "blessing of wisdom", member))
+                    return true;
+                break;
+            }
+            case CLASS_PRIEST:
+                if (!ai->HasAura("power word: fortitude", member) && !ai->HasAura("prayer of fortitude", member))
+                    if (Cast(ai, "power word: fortitude", member))
+                        return true;
+                if (member->GetPowerType() == POWER_MANA && !ai->HasAura("divine spirit", member) &&
+                    !ai->HasAura("prayer of spirit", member))
+                    if (Cast(ai, "divine spirit", member))
+                        return true;
+                break;
+            case CLASS_DRUID:
+                if (!ai->HasAura("mark of the wild", member) && !ai->HasAura("gift of the wild", member))
+                    if (Cast(ai, "mark of the wild", member))
+                        return true;
+                break;
+            default:
+                break;
+        }
+    }
+    return false;
+}
+
 // The tank WALKS POINT in a routed dungeon: the objective is the first
 // still-alive boss in encounters/party_routes.json order; he advances toward
 // it in mmap-path legs, pulls whatever stands in the way, and never outruns
@@ -441,6 +508,10 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
     if (bot->GetHealth() * 2 < bot->GetMaxHealth())
         if (ai->DoSpecificAction("food", Event(), true))
             return;
+
+    // keep the party buffed before anyone thinks about pulling
+    if (KeepPartyBuffed(ai, bot))
+        return;
 
     // tank: skull/LLM pull orders first, then route the dungeon on your
     // own; master-steered advance is the fallback outside routed maps
