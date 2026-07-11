@@ -938,6 +938,9 @@ bool PartyExecutor::MeleeGetBehind(PlayerbotAI* ai, Player* bot, Unit* target)
 {
     if (ai->IsRanged(bot) || PlayerbotAI::IsTank(bot))
         return false;
+    if (target->IsPlayer())
+        return false;   // never chase a moving player's back: the reposition
+                        // loop starves the whole rotation (arena regression)
     if (target->GetVictim() == bot)
         return false;
     if (!target->HasInArc(bot, M_PI_F))
@@ -1013,8 +1016,10 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
     // ---- players are a different sport: control beats sustained dps ----
     if (target->IsPlayer())
     {
-        // survival: cloak purges the dots, vanish resets the fight,
-        // preparation refunds vanish when it's already spent
+        // survival: evasion while being trained, cloak purges the dots,
+        // vanish resets the fight, preparation refunds vanish
+        if (target->GetVictim() == bot && bot->GetHealthPercent() < 60.0f && Cast(ai, "evasion", bot))
+            return true;
         if (bot->GetHealthPercent() < 40.0f &&
             bot->HasAuraType(SPELL_AURA_PERIODIC_DAMAGE) && Cast(ai, "cloak of shadows", bot))
             return true;

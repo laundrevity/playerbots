@@ -109,7 +109,7 @@ namespace
                 {"properties",
                  {{"directives", {{"type", "array"}, {"items", directive}}},
                   {"reply", {{"type", "string"}}}}},
-                {"required", json::array({"directives"})}};
+                {"required", json::array({"directives", "reply"})}};    // silent calls read as bugs
     }
 }
 
