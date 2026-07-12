@@ -581,6 +581,15 @@ bool PartyExecutor::FollowLeader(PlayerbotAI* ai, Player* bot)
 
 void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
 {
+    // never trample an in-progress cast: conjures take 3s and summons 10s,
+    // and the fall-through to FollowLeader was cancelling them with
+    // movement every tick — no healthstone or demon ever got finished
+    if (bot->IsNonMeleeSpellCasted(false, true, true))
+    {
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return;
+    }
+
     // social reactions the retired strategy engine used to service — the
     // executor answers them itself (party/guild/arena invites, charter
     // signatures, trades). Packet handlers arm these triggers upstream in
@@ -1371,6 +1380,13 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     // arena: the shot-caller watches the fight and calls plays unprompted
     // (edge-triggered + rate-limited inside; snapshot only, never blocks)
     sShotCaller.ArenaTick(ai, bot);
+
+    // mid-cast: let the cast land instead of walking through it
+    if (bot->IsNonMeleeSpellCasted(false, true, true))
+    {
+        ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+        return;
+    }
 
     // 1. standing cc duty from the seam
     if (KeepCcApplied(ai, bot))
