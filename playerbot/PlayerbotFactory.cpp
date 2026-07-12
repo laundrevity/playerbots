@@ -3794,6 +3794,10 @@ void PlayerbotFactory::AddGems(Item* item)
         {
             ObjectGuid gem_GUID;
             uint32 SocketColor = proto->Socket[enchant_slot - SOCK_ENCHANTMENT_SLOT].Color;
+            // socket already gemmed: gemming is additive, never destructive
+            // (maintain used to steamroll metas and hand-picked gems)
+            if (item->GetEnchantmentId(EnchantmentSlot(enchant_slot)))
+                continue;
             uint32 gem_id = 0;
             switch (SocketColor) {
             case SOCKET_COLOR_META:
