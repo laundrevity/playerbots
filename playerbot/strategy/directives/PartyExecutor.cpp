@@ -313,8 +313,16 @@ bool PartyExecutor::KeepPartyBuffed(PlayerbotAI* ai, Player* bot)
         return false;
 
     uint8 cls = bot->getClass();
-    if (cls != CLASS_MAGE && cls != CLASS_PALADIN && cls != CLASS_PRIEST && cls != CLASS_DRUID)
+    if (cls != CLASS_MAGE && cls != CLASS_PALADIN && cls != CLASS_PRIEST && cls != CLASS_DRUID &&
+        cls != CLASS_SHAMAN)
         return false;
+
+    // resto shaman: earth shield on the master before the fight
+    if (cls == CLASS_SHAMAN && PlayerbotAI::IsHeal(bot))
+        if (Player* master = ai->GetMaster())
+            if (master->IsInWorld() && master->GetMapId() == bot->GetMapId() &&
+                !ai->HasAura("earth shield", master) && Cast(ai, "earth shield", master))
+                return true;
 
     // prot paladin: Righteous Fury goes up before the first pull, not after
     if (cls == CLASS_PALADIN && PlayerbotAI::IsTank(bot) &&
@@ -1434,6 +1442,60 @@ bool PartyExecutor::WarlockTick(PlayerbotAI* ai, Player* bot, Unit* target)
     return false;
 }
 
+// Resto shaman: triage owns the tick — the healer never chases targets.
+// Totem suite drops once the fight starts and refreshes when destroyed.
+bool PartyExecutor::RestoShamanTick(PlayerbotAI* ai, Player* bot)
+{
+    Group* group = bot->GetGroup();
+
+    // 1. triage first: lowest party member in range (including self)
+    Player* lowest = bot;
+    float lowestPct = bot->GetHealthPercent();
+    if (group)
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (!member || !member->IsInWorld() || !member->IsAlive() ||
+                member->GetMapId() != bot->GetMapId() ||
+                sServerFacade.GetDistance2d(bot, member) > 40.0f)
+                continue;
+            if (member->GetHealthPercent() < lowestPct)
+            {
+                lowestPct = member->GetHealthPercent();
+                lowest = member;
+            }
+        }
+
+    if (lowestPct < 30.0f)
+    {
+        // emergency: NS makes the next Healing Wave instant
+        if (Cast(ai, "nature's swiftness", bot))
+            return true;
+        if (Cast(ai, "healing wave", lowest))
+            return true;
+    }
+    if (lowestPct < 55.0f && Cast(ai, "healing wave", lowest))
+        return true;
+    if (lowestPct < 80.0f && Cast(ai, "lesser healing wave", lowest))
+        return true;
+
+    // 2. totem suite (aura checks read the totem buff on the shaman herself)
+    if (!ai->HasAura("windfury totem", bot) && Cast(ai, "windfury totem", bot))
+        return true;
+    if (!ai->HasAura("strength of earth", bot) && Cast(ai, "strength of earth totem", bot))
+        return true;
+    if (!ai->HasAura("mana spring", bot) && Cast(ai, "mana spring totem", bot))
+        return true;
+
+    // 3. earth shield stays on the master (tank preference comes later)
+    if (Player* master = ai->GetMaster())
+        if (master->IsInWorld() && master->GetMapId() == bot->GetMapId() &&
+            !ai->HasAura("earth shield", master) && Cast(ai, "earth shield", master))
+            return true;
+
+    return false;
+}
+
 void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
 {
     // 0. break hard cc with the pvp medallion (action self-gates: only
@@ -1449,6 +1511,19 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     if (bot->IsNonMeleeSpellCasted(false, true, true))
     {
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+        return;
+    }
+
+    // healers: triage owns the tick — never fall through to dps logic
+    if (PlayerbotAI::IsHeal(bot))
+    {
+        bool acted = false;
+        switch (bot->getClass())
+        {
+            case CLASS_SHAMAN: acted = RestoShamanTick(ai, bot); break;
+            default: break;     // TODO priest/paladin/druid healer kits
+        }
+        ai->SetAIInternalUpdateDelay(acted ? AFTER_CAST_DELAY_MS : IDLE_DELAY_MS);
         return;
     }
 
