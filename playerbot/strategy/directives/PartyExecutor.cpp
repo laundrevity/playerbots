@@ -651,13 +651,23 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
     // warlock upkeep: a demon out and a healthstone in the bags
     if (bot->getClass() == CLASS_WARLOCK)
     {
-        if (!bot->GetPet() &&
-            (Cast(ai, "summon felhunter", bot) || Cast(ai, "summon voidwalker", bot) ||
-             Cast(ai, "summon imp", bot)))
-            return;
-        if (!FindBagItem(bot, HEALTHSTONE_IDS, sizeof(HEALTHSTONE_IDS) / sizeof(uint32)) &&
-            Cast(ai, "create healthstone", bot))
-            return;
+        if (!bot->GetPet())
+        {
+            if (Cast(ai, "summon felhunter", bot) || Cast(ai, "summon voidwalker", bot) ||
+                Cast(ai, "summon imp", bot))
+                return;
+            sLog.outBasic("PartyExecutor: %s cannot summon any demon (felhunter castable=%d, imp castable=%d)",
+                          bot->GetName(), ai->CanCastSpell("summon felhunter", bot, 0),
+                          ai->CanCastSpell("summon imp", bot, 0));
+        }
+        if (!FindBagItem(bot, HEALTHSTONE_IDS, sizeof(HEALTHSTONE_IDS) / sizeof(uint32)))
+        {
+            if (Cast(ai, "create healthstone", bot))
+                return;
+            sLog.outBasic("PartyExecutor: %s cannot create healthstone (castable=%d, shards=%u)",
+                          bot->GetName(), ai->CanCastSpell("create healthstone", bot, 0),
+                          bot->GetItemCount(SOUL_SHARD));
+        }
     }
 
     // rogue: poisons on both blades, then stealth before the fight finds you

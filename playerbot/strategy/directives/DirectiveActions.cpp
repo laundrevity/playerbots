@@ -179,6 +179,22 @@ bool ApplyDirectiveAction::Execute(Event& event)
                                PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL,
                                /*isPrivate=*/false);
 
+    // "give_healthstone_to": the warlock opens trade with the named member;
+    // the executor's trade hook stuffs the stone and accepts from there
+    if (!incoming.giveHealthstoneTo.empty() && bot->getClass() == CLASS_WARLOCK && bot->GetGroup())
+        for (GroupReference* itr = bot->GetGroup()->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (!member || member == bot || !member->IsInWorld())
+                continue;
+            if (!SameNameNoCase(member->GetName(), incoming.giveHealthstoneTo.c_str()))
+                continue;
+            WorldPacket data(CMSG_INITIATE_TRADE, 8);
+            data << member->GetObjectGuid();
+            bot->GetSession()->HandleInitiateTradeOpcode(data);
+            break;
+        }
+
     Report(incoming, true, note);
     return true;
 }

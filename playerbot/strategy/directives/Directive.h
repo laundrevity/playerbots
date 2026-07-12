@@ -57,6 +57,7 @@ namespace ai
         bool hasRetreat = false;          // parsed, not executed in P2
         bool hadChat = false;
         std::string chatSay;              // spoken in party on acceptance (shot-caller reply)
+        std::string giveHealthstoneTo;    // warlock: initiate trade with this member, stone rides the trade hook
 
         bool IsActiveNow(uint32 nowMs) const { return valid && nowMs < expiresAtMs; }
     };

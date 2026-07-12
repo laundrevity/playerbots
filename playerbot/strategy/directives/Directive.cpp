@@ -156,6 +156,8 @@ bool ParseDirective(const std::string& text, Directive& out, std::string& error)
             out.chatSay.resize(140);
     }
 
+    out.giveHealthstoneTo = GetString(j, "give_healthstone_to");
+
     return true;
 }
 

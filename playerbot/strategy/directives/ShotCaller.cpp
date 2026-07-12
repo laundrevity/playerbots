@@ -44,6 +44,8 @@ namespace
         "- Give each bot only what it needs; an empty kill_order means 'carry on as you were'.\n"
         "- cooldowns: hold = save everything, normal = standard, burn = use offensive cooldowns.\n"
         "- cc only when asked or clearly right (mage=Polymorph, rogue=Sap before combat).\n"
+        "- if the human asks for a healthstone, set give_healthstone_to to the HUMAN'S name "
+        "on the warlock bot's directive (omit the field otherwise).\n"
         "- directives may only name the LISTED BOTS — never the human.\n"
         "- sometimes you get a Situation line instead of chat: that is you noticing the fight "
         "state on your own — make the call unprompted.\n"
@@ -97,6 +99,7 @@ namespace
             {"properties",
              {{"bot", {{"type", "string"}}},
               {"kill_order", {{"type", "array"}, {"items", target}}},
+              {"give_healthstone_to", {{"type", "string"}}},
               {"cooldowns", {{"type", "string"}, {"enum", json::array({"hold", "normal", "burn"})}}},
               {"cc",
                {{"type", "array"},
@@ -390,6 +393,9 @@ void ShotCaller::ProcessJob(const Job& job)
             {"kill_order", entry.value("kill_order", json::array())},
             {"cooldowns", entry.value("cooldowns", "normal")},
         };
+        if (entry.contains("give_healthstone_to") && entry["give_healthstone_to"].is_string() &&
+            !entry["give_healthstone_to"].get<std::string>().empty())
+            directive["give_healthstone_to"] = entry["give_healthstone_to"];
         if (entry.contains("cc"))
             directive["cc"] = entry["cc"];
         if (dispatched == 0 && !reply.empty())
