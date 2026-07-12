@@ -684,9 +684,17 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         {
             if (Cast(ai, "create healthstone", bot))
                 return;
+            // shard hoard is the usual blocker (non-stacking, bags fill up):
+            // burn the surplus like a human lock cleaning bags
+            uint32 shards = bot->GetItemCount(SOUL_SHARD);
+            if (shards > 3)
+            {
+                bot->DestroyItemCount(SOUL_SHARD, shards - 3, true);
+                ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+                return;
+            }
             sLog.outBasic("PartyExecutor: %s cannot create healthstone (castable=%d, shards=%u)",
-                          bot->GetName(), ai->CanCastSpell("create healthstone", bot, 0),
-                          bot->GetItemCount(SOUL_SHARD));
+                          bot->GetName(), ai->CanCastSpell("create healthstone", bot, 0), shards);
         }
     }
 

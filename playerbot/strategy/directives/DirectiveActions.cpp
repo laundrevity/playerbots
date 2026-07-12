@@ -224,9 +224,14 @@ bool MaintainAction::Execute(Event& event)
             bot->StoreNewItemInBestSlots(22054, 20);
     }
 
-    // warlocks need shards for summons and healthstones (6265, non-stacking)
-    if (bot->getClass() == CLASS_WARLOCK && !bot->HasItemCount(6265, 3))
-        bot->StoreNewItemInBestSlots(6265, 6);
+    // warlocks need shards for summons and healthstones (6265, non-stacking
+    // — each shard eats a bag slot, so top up to 3, never hoard)
+    if (bot->getClass() == CLASS_WARLOCK)
+    {
+        uint32 shards = bot->GetItemCount(6265);
+        if (shards < 3)
+            bot->StoreNewItemInBestSlots(6265, 3 - shards);
+    }
 
     bot->SaveToDB();
 
