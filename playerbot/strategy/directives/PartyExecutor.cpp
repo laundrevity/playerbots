@@ -767,6 +767,39 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         }
     }
 
+    // arena, gates open, out of combat: converge on the enemy AS A TEAM —
+    // nobody camps the starting room (non-stealth path; rogues creep above)
+    if (bot->InArena() && bot->GetBattleGround() &&
+        bot->GetBattleGround()->GetStatus() == STATUS_IN_PROGRESS &&
+        !ai->HasAura("stealth", bot))
+    {
+        AiObjectContext* arenaContext = ai->GetAiObjectContext();
+        std::list<ObjectGuid> possible = arenaContext->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+        Unit* enemy = nullptr;
+        float best = 200.0f;
+        for (const ObjectGuid& guid : possible)
+        {
+            Unit* candidate = ai->GetUnit(guid);
+            if (!candidate || !candidate->IsPlayer() || !candidate->IsAlive())
+                continue;
+            float distance = sServerFacade.GetDistance2d(bot, candidate);
+            if (distance < best)
+            {
+                best = distance;
+                enemy = candidate;
+            }
+        }
+        if (enemy)
+        {
+            if (EngageTarget(ai, bot, enemy))
+                return;
+            bot->GetMotionMaster()->MovePoint(0, enemy->GetPositionX(), enemy->GetPositionY(),
+                                              enemy->GetPositionZ(), FORCED_MOVEMENT_RUN);
+            ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+            return;
+        }
+    }
+
     // tank: skull/LLM pull orders first, then route the dungeon on your
     // own; master-steered advance is the fallback outside routed maps
     if (TryChargePull(ai, bot))
@@ -926,7 +959,19 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
     if (nearest)
         return nearest;
 
-    // 3e. arena: nobody engaged yet — the nearest enemy player IS the fight
+    // 3e. arena: focus fire — a living teammate's target outranks nearest
+    if (bot->InArena() && group)
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (!member || member == bot || !member->IsInWorld() || !member->IsAlive())
+                continue;
+            if (Unit* focused = member->GetVictim())
+                if (focused->IsPlayer() && focused->IsAlive())
+                    return focused;
+        }
+
+    // arena: nobody engaged yet — the nearest enemy player IS the fight
     if (bot->InArena())
     {
         std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
