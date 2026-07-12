@@ -1522,44 +1522,7 @@ void RandomPlayerbotMgr::CheckBgQueue()
 
             BattleGroundBracketId bracketId = pvpDiff->GetBracketId();
 #endif
-#ifdef MANGOSBOT_TWO
-            /* to fix
-            if (ArenaType arenaType = sServerFacade.BgArenaType(queueTypeId))
-            {
-                BattleGroundQueue& bgQueue = sServerFacade.bgQueue(queueTypeId);
-                GroupQueueInfo ginfo;
-                uint32 tempT = TeamId;
-
-                if (bgQueue.GetPlayerGroupInfoData(player->GetObjectGuid(), &ginfo))
-                {
-                    if (ginfo.isRated)
-                    {
-                        for (uint32 arena_slot = 0; arena_slot < MAX_ARENA_SLOT; ++arena_slot)
-                        {
-                            uint32 arena_team_id = player->GetArenaTeamId(arena_slot);
-                            ArenaTeam* arenateam = sObjectMgr.GetArenaTeamById(arena_team_id);
-                            if (!arenateam)
-                                continue;
-                            if (arenateam->GetType() != arenaType)
-                                continue;
-
-                            Rating[queueTypeId][bracketId][1] = arenateam->GetRating();
-                        }
-                    }
-                    TeamId = ginfo.isRated ? 1 : 0;
-                }
-                if (player->InArena())
-                {
-                    if (player->GetBattleGround()->IsRated())
-                        TeamId = 1;
-                    else
-                        TeamId = 0;
-                }
-                ArenaBots[queueTypeId][bracketId][TeamId][tempT]++;
-            }
-         */
-#endif
-#ifdef MANGOSBOT_ONE
+#if defined(MANGOSBOT_ONE) || defined(MANGOSBOT_TWO)
             if (ArenaType arenaType = sServerFacade.BgArenaType(queueTypeId))
             {
                 bool isBot = player->GetPlayerbotAI() != nullptr;
@@ -1632,8 +1595,8 @@ void RandomPlayerbotMgr::CheckBgQueue()
 #ifndef MANGOSBOT_ZERO
                 if (ArenaType arenaType = sServerFacade.BgArenaType(queueTypeId))
                 {
-#ifndef MANGOSBOT_ONE
-                    // (for MANGOSBOT_ONE this is set on the queue thread with the
+#if !defined(MANGOSBOT_ONE) && !defined(MANGOSBOT_TWO)
+                    // (for ONE/TWO this is set on the queue thread with the
                     // correct [0]=skirmish/[1]=rated index — see lambda above)
                     NeedBots[queueTypeId][bracketId][TeamId] = true;
 #endif
@@ -1687,30 +1650,7 @@ void RandomPlayerbotMgr::CheckBgQueue()
 
             BattleGroundBracketId bracketId = pvpDiff->GetBracketId();
 #endif
-#ifdef MANGOSBOT_TWO
-            /* to fix
-            ArenaType arenaType = sServerFacade.BgArenaType(queueTypeId);
-            if (arenaType != ARENA_TYPE_NONE)
-            {
-                BattleGroundQueue& bgQueue = sServerFacade.bgQueue(queueTypeId);
-                GroupQueueInfo ginfo;
-                uint32 tempT = TeamId;
-                if (bgQueue.GetPlayerGroupInfoData(bot->GetObjectGuid(), &ginfo))
-                {
-                    TeamId = ginfo.isRated ? 1 : 0;
-                }
-                if (bot->InArena())
-                {
-                    if (bot->GetBattleGround()->IsRated())
-                        TeamId = 1;
-                    else
-                        TeamId = 0;
-                }
-                ArenaBots[queueTypeId][bracketId][TeamId][tempT]++;
-            }
-        */
-#endif
-#ifdef MANGOSBOT_ONE
+#if defined(MANGOSBOT_ONE) || defined(MANGOSBOT_TWO)
             ArenaType arenaType = sServerFacade.BgArenaType(queueTypeId);
             if (arenaType != ARENA_TYPE_NONE)
             {
