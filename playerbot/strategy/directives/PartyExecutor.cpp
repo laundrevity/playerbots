@@ -201,10 +201,18 @@ bool PartyExecutor::ShouldOwn(PlayerbotAI* ai, Player* bot)
 {
     if (!sPlayerbotAIConfig.executorEnabled || !sPlayerbotAIConfig.directiveEnabled)
         return false;
+    // arenas: the executor owns EVERY combatant — masterless opponents get
+    // the same reflex kits (the old engine's jank was the difficulty floor).
+    // The LLM shot-caller stays exclusive to real-player parties (ArenaTick
+    // requires a master), preserving the human side's edge.
+    if (bot->InArena())
+        // masterless HEALERS keep the old engine (no healer tick exists yet:
+        // executor ownership would reduce them to wanding)
+        return bot->IsAlive() && (ai->HasRealPlayerMaster() || !PlayerbotAI::IsHeal(bot));
     if (!ai->HasRealPlayerMaster())
         return false;
-    if (bot->InBattleGround() && !bot->InArena())
-        return false;   // regular bgs keep the old brain; ARENAS are ours
+    if (bot->InBattleGround())
+        return false;   // regular bgs keep the old brain
     if (!bot->IsAlive())
         return false;   // the module's dead-state engine handles release/rez
     return true;
@@ -693,8 +701,10 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
                 ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
                 return;
             }
-            sLog.outBasic("PartyExecutor: %s cannot create healthstone (castable=%d, shards=%u)",
-                          bot->GetName(), ai->CanCastSpell("create healthstone", bot, 0), shards);
+            SpellCastResult createResult = SPELL_CAST_OK;
+            ai->CanCastSpell("create healthstone", bot, 0, nullptr, false, false, false, &createResult);
+            sLog.outBasic("PartyExecutor: %s cannot create healthstone (result=%u, shards=%u)",
+                          bot->GetName(), uint32(createResult), shards);
         }
     }
 
