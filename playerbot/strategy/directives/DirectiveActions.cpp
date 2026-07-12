@@ -208,6 +208,10 @@ bool MaintainAction::Execute(Event& event)
             bot->StoreNewItemInBestSlots(22054, 20);
     }
 
+    // warlocks need shards for summons and healthstones (6265, non-stacking)
+    if (bot->getClass() == CLASS_WARLOCK && !bot->HasItemCount(6265, 3))
+        bot->StoreNewItemInBestSlots(6265, 6);
+
     bot->SaveToDB();
 
     std::ostringstream out;

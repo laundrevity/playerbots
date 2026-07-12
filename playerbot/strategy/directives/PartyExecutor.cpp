@@ -10,6 +10,8 @@
 
 #include "playerbot/thirdparty/nlohmann/json.hpp"
 
+#include "Entities/Bag.h"
+#include "Entities/Pet.h"
 #include "Groups/Group.h"
 #include "Maps/Map.h"
 #include "MotionGenerators/MotionMaster.h"
@@ -79,6 +81,32 @@ namespace
         bot->ApplyEnchantment(weapon, TEMP_ENCHANTMENT_SLOT, true);
         bot->DestroyItemCount(itemId, 1, true);
         return true;
+    }
+
+    // healthstones a warlock might carry (master + lvl-60 ranks, DB-verified)
+    const uint32 HEALTHSTONE_IDS[] = { 22105, 22104, 22103, 19013, 19012, 19011 };
+    constexpr uint32 SOUL_SHARD = 6265;
+
+    Item* FindBagItem(Player* bot, const uint32* ids, size_t count)
+    {
+        auto matches = [&](Item* item)
+        {
+            for (size_t i = 0; i < count; ++i)
+                if (item->GetEntry() == ids[i])
+                    return true;
+            return false;
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                if (matches(item))
+                    return item;
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+            if (Bag* pBag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bag))
+                for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
+                    if (Item* item = pBag->GetItemByPos(j))
+                        if (matches(item))
+                            return item;
+        return nullptr;
     }
 
     // nearest enemy player classified healer by his talents (works for
@@ -577,9 +605,20 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         if (socialEvent.getSource().empty())
             continue;
         trigger->Reset();
-        ai->DoSpecificAction(social.action, socialEvent, true);
         if (!strcmp(social.trigger, "trade status"))
+        {
+            // a warlock being traded by the master offers a healthstone —
+            // the whole point of opening trade with your lock
+            if (bot->getClass() == CLASS_WARLOCK)
+                if (TradeData* trade = bot->GetTradeData())
+                    if (!trade->GetItem(TradeSlots(0)))
+                        if (Item* stone = FindBagItem(bot, HEALTHSTONE_IDS, sizeof(HEALTHSTONE_IDS) / sizeof(uint32)))
+                            trade->SetItem(TradeSlots(0), stone);
+            ai->DoSpecificAction(social.action, socialEvent, true);
             ai->DoSpecificAction("equip upgrades", Event(), true);
+        }
+        else
+            ai->DoSpecificAction(social.action, socialEvent, true);
         return;
     }
 
@@ -599,6 +638,18 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
     // keep the party buffed before anyone thinks about pulling
     if (KeepPartyBuffed(ai, bot))
         return;
+
+    // warlock upkeep: a demon out and a healthstone in the bags
+    if (bot->getClass() == CLASS_WARLOCK)
+    {
+        if (!bot->GetPet() &&
+            (Cast(ai, "summon felhunter", bot) || Cast(ai, "summon voidwalker", bot) ||
+             Cast(ai, "summon imp", bot)))
+            return;
+        if (!FindBagItem(bot, HEALTHSTONE_IDS, sizeof(HEALTHSTONE_IDS) / sizeof(uint32)) &&
+            Cast(ai, "create healthstone", bot))
+            return;
+    }
 
     // rogue: poisons on both blades, then stealth before the fight finds you
     if (bot->getClass() == CLASS_ROGUE)
@@ -1265,6 +1316,51 @@ bool PartyExecutor::ProtPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target)
     return false;
 }
 
+bool PartyExecutor::WarlockTick(PlayerbotAI* ai, Player* bot, Unit* target)
+{
+    if (ThreatCapped(ai, bot, target))
+    {
+        ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+        return true;
+    }
+
+    // the demon fights or the warlock is half a class: keep it on target
+    if (Pet* pet = bot->GetPet())
+        if (pet->IsAlive() && pet->GetVictim() != target && pet->AI())
+        {
+            pet->AttackStop();
+            pet->GetMotionMaster()->Clear();
+            pet->AI()->AttackStart(target);
+        }
+
+    // panic buttons: coil for the heal+cc, fear the melee eating us alive
+    if (bot->GetHealthPercent() < 50.0f && Cast(ai, "death coil", target))
+        return true;
+    if (target->IsPlayer() && target->GetVictim() == bot &&
+        bot->CanReachWithMeleeAttack(target) &&
+        !target->HasAuraType(SPELL_AURA_MOD_FEAR) && !target->HasAuraType(SPELL_AURA_MOD_STUN) &&
+        Cast(ai, "fear", target))
+        return true;
+
+    // dot suite (SL/SL bread and butter); Cast() skips already-applied ranks
+    if (!ai->HasAura("curse of agony", target, false, true) && Cast(ai, "curse of agony", target))
+        return true;
+    if (!ai->HasAura("corruption", target, false, true) && Cast(ai, "corruption", target))
+        return true;
+    if (!ai->HasAura("siphon life", target, false, true) && Cast(ai, "siphon life", target))
+        return true;
+
+    // resource loop: tap when full of health, drain when not
+    if (bot->GetPower(POWER_MANA) * 10 < bot->GetMaxPower(POWER_MANA) * 3 &&
+        bot->GetHealthPercent() > 60.0f && Cast(ai, "life tap", bot))
+        return true;
+    if (bot->GetHealthPercent() < 80.0f && Cast(ai, "drain life", target))
+        return true;
+    if (Cast(ai, "shadow bolt", target))
+        return true;
+    return false;
+}
+
 void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
 {
     // 0. break hard cc with the pvp medallion (action self-gates: only
@@ -1307,6 +1403,7 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
         case CLASS_MAGE:    acted = MageTick(ai, bot, target); break;
         case CLASS_PALADIN: acted = PlayerbotAI::IsTank(bot) ? ProtPaladinTick(ai, bot, target)
                                                             : RetPaladinTick(ai, bot, target); break;
+        case CLASS_WARLOCK: acted = WarlockTick(ai, bot, target); break;
         default:            acted = false; break;
     }
 
