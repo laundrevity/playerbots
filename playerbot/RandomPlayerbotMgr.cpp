@@ -726,6 +726,7 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 elapsed, bool minimal)
             CheckBgQueue();
 
         AcceptPendingBgInvites();   // self-throttled (10s)
+        DirectRatedArenaCaptains(); // self-throttled (30s)
     }
 
     if (time(nullptr) > (OfflineGroupBotsTimer + 5) && players.size())
@@ -1455,6 +1456,50 @@ void RandomPlayerbotMgr::AcceptPendingBgInvites()
     });
 }
 
+// Rated arena fill must not wait on distributed AI cadence (observed: a
+// captain took ~14 minutes to evaluate his join trigger while a real
+// player sat in queue). When the accounting says a rated queue needs
+// opponents, push one eligible captain through his own join evaluation
+// immediately — same central-sweep philosophy as AcceptPendingBgInvites.
+void RandomPlayerbotMgr::DirectRatedArenaCaptains()
+{
+    static time_t lastSweep = 0;
+    if (time(nullptr) < lastSweep + 30)
+        return;
+    lastSweep = time(nullptr);
+
+    bool needRated = false;
+    for (int i = BG_BRACKET_ID_FIRST; i < MAX_BATTLEGROUND_BRACKETS && !needRated; ++i)
+        for (int j = BATTLEGROUND_QUEUE_AV; j < MAX_BATTLEGROUND_QUEUE_TYPES && !needRated; ++j)
+            if (NeedBots[j][i][1] && sServerFacade.BgArenaType(BattleGroundQueueTypeId(j)))
+                needRated = true;
+    if (!needRated)
+        return;
+
+    bool directedThisSweep = false;
+    ForEachPlayerbot([&](Player* bot)
+    {
+        if (directedThisSweep)
+            return;
+        if (!bot || !bot->IsInWorld() || bot->InBattleGround() || bot->InBattleGroundQueue())
+            return;
+        if (bot->GetLevel() < DEFAULT_MAX_LEVEL || !IsFreeBot(bot))
+            return;
+        bool isCaptain = false;
+        for (uint32 slot = 0; slot < MAX_ARENA_SLOT && !isCaptain; ++slot)
+            if (ArenaTeam* team = sObjectMgr.GetArenaTeamById(bot->GetArenaTeamId(slot)))
+                if (team->GetCaptainGuid() == bot->GetObjectGuid())
+                    isCaptain = true;
+        if (!isCaptain || !bot->GetPlayerbotAI())
+            return;
+        if (bot->GetPlayerbotAI()->DoSpecificAction("free bg join", Event(), true))
+        {
+            sLog.outBasic("RandomPlayerbotMgr: directed captain %s to evaluate rated arena join", bot->GetName());
+            directedThisSweep = true;
+        }
+    });
+}
+
 void RandomPlayerbotMgr::CheckBgQueue()
 {
     if (!BgCheckTimer)
@@ -1495,6 +1540,10 @@ void RandomPlayerbotMgr::CheckBgQueue()
         if (!player || !player->IsInWorld())
             continue;
 
+        bool realPlayer = player->GetPlayerbotAI() == nullptr;   // diagnosis
+        if (realPlayer)
+            sLog.outBasic("BGCheck: real player %s InBGQueue=%u", player->GetName(), uint32(player->InBattleGroundQueue()));
+
         if (!player->InBattleGroundQueue())
             continue;
 
@@ -1515,12 +1564,26 @@ void RandomPlayerbotMgr::CheckBgQueue()
 #endif
 #ifdef MANGOSBOT_TWO
             BattleGround* bg = sBattleGroundMgr.GetBattleGroundTemplate(bgTypeId);
+            if (!bg)
+            {
+                if (realPlayer)
+                    sLog.outBasic("BGCheck: %s NO bg template for type %u", player->GetName(), uint32(bgTypeId));
+                continue;
+            }
             uint32 mapId = bg->GetMapId();
             PvPDifficultyEntry const* pvpDiff = GetBattlegroundBracketByLevel(mapId, player->GetLevel());
             if (!pvpDiff)
+            {
+                if (realPlayer)
+                    sLog.outBasic("BGCheck: %s NO pvpDiff for map %u at level %u (queueType %u)",
+                                  player->GetName(), mapId, player->GetLevel(), uint32(queueTypeId));
                 continue;
+            }
 
             BattleGroundBracketId bracketId = pvpDiff->GetBracketId();
+            if (realPlayer)
+                sLog.outBasic("BGCheck: %s queueType %u bracket %u — posting arena accounting",
+                              player->GetName(), uint32(queueTypeId), uint32(bracketId));
 #endif
 #if defined(MANGOSBOT_ONE) || defined(MANGOSBOT_TWO)
             if (ArenaType arenaType = sServerFacade.BgArenaType(queueTypeId))

@@ -137,6 +137,7 @@ public:
         std::map<Team, std::vector<uint32>> LfgDungeons;
         void CheckBgQueue();
         void AcceptPendingBgInvites();
+        void DirectRatedArenaCaptains();
         void CheckLfgQueue();
         void CheckPlayers();
         void SaveCurTime();
