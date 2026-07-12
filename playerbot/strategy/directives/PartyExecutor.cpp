@@ -1168,6 +1168,13 @@ bool PartyExecutor::RetPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (BurnPolicy(ai) && Cast(ai, "avenging wrath", bot))
         return true;
 
+    // vs players: hammer of justice the enemy healer inside the kill window
+    if (target->IsPlayer())
+        if (Unit* healer = NearestEnemyHealer(ai, bot))
+            if (healer != target && target->GetHealthPercent() < 50.0f &&
+                !healer->HasAuraType(SPELL_AURA_MOD_STUN) && Cast(ai, "hammer of justice", healer))
+                return true;
+
     if (Cast(ai, "judgement", target))
     {
         // judgement is off the GCD and consumes the seal: reseal immediately
@@ -1177,6 +1184,9 @@ bool PartyExecutor::RetPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target)
         return true;
     }
     if (Cast(ai, "crusader strike", target))
+        return true;
+    // ranged execute
+    if (target->GetHealthPercent() < 20.0f && Cast(ai, "hammer of wrath", target))
         return true;
     return false;
 }
