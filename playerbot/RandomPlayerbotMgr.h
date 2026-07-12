@@ -138,6 +138,8 @@ public:
         void CheckBgQueue();
         void AcceptPendingBgInvites();
         void DirectRatedArenaCaptains();
+        void DeterministicArenaMatchmaker();
+        void DeterministicSkirmishFill();
         void CheckLfgQueue();
         void CheckPlayers();
         void SaveCurTime();

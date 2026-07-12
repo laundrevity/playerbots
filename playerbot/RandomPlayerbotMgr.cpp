@@ -725,8 +725,13 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 elapsed, bool minimal)
         if (time(nullptr) > (BgCheckTimer + 30))
             CheckBgQueue();
 
-        AcceptPendingBgInvites();   // self-throttled (10s)
-        DirectRatedArenaCaptains(); // self-throttled (30s)
+        AcceptPendingBgInvites();        // self-throttled (10s)
+#ifdef MANGOSBOT_TWO
+        DeterministicArenaMatchmaker();  // self-throttled (3s); owns rated fill on wotlk
+        DeterministicSkirmishFill();     // self-throttled (3s); owns skirmish fill on wotlk
+#else
+        DirectRatedArenaCaptains();      // self-throttled (30s)
+#endif
     }
 
     if (time(nullptr) > (OfflineGroupBotsTimer + 5) && players.size())
@@ -1481,7 +1486,9 @@ void RandomPlayerbotMgr::DirectRatedArenaCaptains()
     {
         if (directedThisSweep)
             return;
-        if (!bot || !bot->IsInWorld() || bot->InBattleGround() || bot->InBattleGroundQueue())
+        // NB regular-BG queue slots don't disqualify: multi-queue is legal and
+        // ambient bots camp BG queues whenever JoinBG is on
+        if (!bot || !bot->IsInWorld() || bot->InBattleGround() || !bot->HasFreeBattleGroundQueueId())
             return;
         if (bot->GetLevel() < DEFAULT_MAX_LEVEL || !IsFreeBot(bot))
             return;
@@ -1492,12 +1499,459 @@ void RandomPlayerbotMgr::DirectRatedArenaCaptains()
                     isCaptain = true;
         if (!isCaptain || !bot->GetPlayerbotAI())
             return;
-        if (bot->GetPlayerbotAI()->DoSpecificAction("free bg join", Event(), true))
-        {
-            sLog.outBasic("RandomPlayerbotMgr: directed captain %s to evaluate rated arena join", bot->GetName());
+        // "bg join" (base action): player-presence-driven gates — the "free bg
+        // join" variant hard-declines whenever RandomBotAutoJoinBG=0
+        bool joined = bot->GetPlayerbotAI()->DoSpecificAction("bg join", Event(), true);
+        sLog.outBasic("RandomPlayerbotMgr: directed captain %s to evaluate rated arena join -> %s",
+                      bot->GetName(), joined ? "JOINED" : "declined");
+        if (joined)
             directedThisSweep = true;
-        }
     });
+}
+
+// Deterministic rated-arena matchmaker (wotlk). The organic fill chain
+// (captain AI trigger -> battlemaster proximity -> group warm-up retries ->
+// invite acceptance) has too many links that fail silently, and each failure
+// is a hollow "2v0" match for the real player. When the accounting reports a
+// rated arena queue needing opponents, drive one bot team through every step
+// ourselves: log both members in, clear stale queues and groups, teleport
+// them to a capital battlemaster, group them, queue them rated through the
+// real join handler, and accept their invites the moment they land. Every
+// stage has a deadline; a team that stalls is blacklisted for an hour and the
+// next candidate is tried.
+void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
+{
+#ifdef MANGOSBOT_TWO
+    static time_t lastTick = 0;
+    time_t now = time(nullptr);
+    if (now < lastTick + 3)
+        return;
+    lastTick = now;
+
+    enum FillStage { FILL_IDLE, FILL_LOGIN, FILL_PREP, FILL_QUEUED };
+    static FillStage stage = FILL_IDLE;
+    static uint32 fillTeamId = 0;
+    static ObjectGuid fillMember[2];
+    static time_t deadline = 0;
+    static time_t cooldownUntil = 0;
+    static time_t lastPortSend = 0;
+    static bool joinSent = false;
+    static std::map<uint32, time_t> blacklist;      // teamId -> retry-after
+
+    // capital battlemasters spawned for this project (Beka Zipwhistle 19911)
+    struct BmSpawn { uint32 dbGuid; uint32 map; float x, y, z, o; };
+    static const BmSpawn bmAlliance = { 9850300, 0, -8818.0f, 663.0f, 96.8f, 2.2f };
+    static const BmSpawn bmHorde    = { 9850301, 1, 1680.0f, -4460.0f, 20.5f, 1.5f };
+
+    auto abortFill = [&](char const* reason)
+    {
+        if (fillTeamId)
+        {
+            sLog.outBasic("ArenaMatchmaker: team %u abandoned (%s)", fillTeamId, reason);
+            blacklist[fillTeamId] = now + 3600;
+        }
+        stage = FILL_IDLE;
+        fillTeamId = 0;
+        joinSent = false;
+    };
+
+    // which rated arena queue needs opponents?
+    ArenaType needType = ARENA_TYPE_NONE;
+    for (int i = BG_BRACKET_ID_FIRST; i < MAX_BATTLEGROUND_BRACKETS && !needType; ++i)
+        for (int j = BATTLEGROUND_QUEUE_AV; j < MAX_BATTLEGROUND_QUEUE_TYPES && !needType; ++j)
+            if (NeedBots[j][i][1])
+                if (ArenaType type = sServerFacade.BgArenaType(BattleGroundQueueTypeId(j)))
+                    needType = type;
+
+    if (stage == FILL_IDLE)
+    {
+        if (!needType || now < cooldownUntil)
+            return;
+
+        // pick a same-faction all-random-bot team of the needed size
+        ArenaTeam* pick = nullptr;
+        ObjectGuid mem[2];
+        for (auto itr = sObjectMgr.GetArenaTeamMapBegin(); itr != sObjectMgr.GetArenaTeamMapEnd(); ++itr)
+        {
+            ArenaTeam* team = itr->second;
+            if (!team || team->GetType() != needType)
+                continue;
+            auto banned = blacklist.find(team->GetId());
+            if (banned != blacklist.end() && now < banned->second)
+                continue;
+
+            Team faction = TEAM_NONE;
+            uint32 count = 0;
+            bool eligible = true;
+            for (auto& m : team->GetMembers())
+            {
+                if (!IsRandomBot(m.guid.GetCounter()))
+                {
+                    eligible = false;   // real player's team (or alt) — never touch
+                    break;
+                }
+                Team memberFaction = sObjectMgr.GetPlayerTeamByGUID(m.guid);
+                if (faction == TEAM_NONE)
+                    faction = memberFaction;
+                else if (memberFaction != faction)
+                {
+                    eligible = false;   // cross-faction rows can never group
+                    break;
+                }
+                // a team currently mid-match is busy, not broken — skip it
+                // this cycle without the hour-long blacklist
+                if (Player* online = sObjectMgr.GetPlayer(m.guid))
+                    if (online->InBattleGround())
+                    {
+                        eligible = false;
+                        break;
+                    }
+                if (count < uint32(needType))
+                    mem[count++] = m.guid;
+            }
+            if (!eligible || count < uint32(needType))
+                continue;
+
+            pick = team;
+            break;
+        }
+
+        if (!pick)
+        {
+            sLog.outBasic("ArenaMatchmaker: rated %uv%u needed but no eligible bot team found",
+                          uint32(needType), uint32(needType));
+            cooldownUntil = now + 60;
+            return;
+        }
+
+        fillTeamId = pick->GetId();
+        fillMember[0] = mem[0];
+        fillMember[1] = mem[1];
+        deadline = now + 90;
+        stage = FILL_LOGIN;
+        sLog.outBasic("ArenaMatchmaker: filling rated %uv%u with team %u <%s> (%s, %s)",
+                      uint32(needType), uint32(needType), pick->GetId(), pick->GetName().c_str(),
+                      fillMember[0].GetString().c_str(), fillMember[1].GetString().c_str());
+        // fall through into FILL_LOGIN this tick
+    }
+
+    if (stage == FILL_IDLE)
+        return;
+
+    if (now > deadline)
+    {
+        abortFill("stage deadline exceeded");
+        return;
+    }
+
+    Player* member[2];
+    for (int i = 0; i < 2; ++i)
+        member[i] = sObjectMgr.GetPlayer(fillMember[i]);
+
+    if (stage == FILL_LOGIN)
+    {
+        bool allOnline = true;
+        for (int i = 0; i < 2; ++i)
+        {
+            if (member[i] && member[i]->IsInWorld())
+                continue;
+            allOnline = false;
+            if (!member[i] && !AddRandomBot(fillMember[i].GetCounter()))   // idempotent
+            {
+                abortFill("member cannot log in");
+                return;
+            }
+        }
+        if (!allOnline)
+            return;
+
+        // one-shot prep: clear stale state and ship both to the battlemaster
+        BmSpawn const& bm = member[0]->GetTeam() == ALLIANCE ? bmAlliance : bmHorde;
+        for (int i = 0; i < 2; ++i)
+        {
+            Player* bot = member[i];
+            if (bot->InBattleGround())
+            {
+                abortFill("member already in a battleground");
+                return;
+            }
+            for (uint32 slot = 0; slot < PLAYER_MAX_BATTLEGROUND_QUEUES; ++slot)
+            {
+                BattleGroundQueueTypeId queueTypeId = bot->GetBattleGroundQueueTypeId(slot);
+                if (queueTypeId == BATTLEGROUND_QUEUE_NONE)
+                    continue;
+                WorldPacket leave(CMSG_BATTLEFIELD_PORT, 20);
+                leave << uint8(BattleGroundMgr::BgArenaType(queueTypeId)) << uint8(0)
+                      << uint32(BattleGroundMgr::BgTemplateId(queueTypeId)) << uint16(0) << uint8(0);
+                bot->GetSession()->HandleBattlefieldPortOpcode(leave);
+            }
+            if (bot->GetGroup())
+                bot->GetGroup()->RemoveMember(bot->GetObjectGuid(), 0);
+            if (bot->GetPlayerbotAI())
+                bot->GetPlayerbotAI()->Reset();
+            bot->TeleportTo(bm.map, bm.x + 2.0f * i, bm.y, bm.z, bm.o);
+        }
+        stage = FILL_PREP;
+        deadline = now + 60;
+        return;
+    }
+
+    // from here both members must stay resolvable
+    if (!member[0] || !member[1])
+    {
+        abortFill("member vanished");
+        return;
+    }
+
+    if (stage == FILL_PREP)
+    {
+        BmSpawn const& bm = member[0]->GetTeam() == ALLIANCE ? bmAlliance : bmHorde;
+        for (int i = 0; i < 2; ++i)
+        {
+            Player* bot = member[i];
+            if (!bot->IsInWorld() || bot->IsBeingTeleported())
+                return;             // still in transit
+            if (bot->GetMapId() != bm.map ||
+                bot->GetDistance2d(bm.x, bm.y) > 50.0f)
+                return;
+        }
+
+        // group them (leader = member[0]; the join handler only needs the
+        // leader to be IN the team, not its captain)
+        Group* group = member[0]->GetGroup();
+        if (!group)
+        {
+            group = new Group();
+            if (!group->Create(member[0]->GetObjectGuid(), member[0]->GetName()))
+            {
+                delete group;
+                abortFill("group creation failed");
+                return;
+            }
+            sObjectMgr.AddGroup(group);
+        }
+        if (member[1]->GetGroup() != group)
+        {
+            if (member[1]->GetGroup())
+                member[1]->GetGroup()->RemoveMember(member[1]->GetObjectGuid(), 0);
+            if (!group->AddMember(member[1]->GetObjectGuid(), member[1]->GetName()))
+            {
+                abortFill("partner could not join group");
+                return;
+            }
+        }
+
+        // stale queue slots fail the group precheck: keep leaving until clean
+        // (queue removal round-trips through the queue thread, so the leave
+        // packets sent at login-prep may not have landed yet)
+        if (!joinSent)
+        {
+            for (int i = 0; i < 2; ++i)
+            {
+                if (!member[i]->InBattleGroundQueue())
+                    continue;
+                for (uint32 slot = 0; slot < PLAYER_MAX_BATTLEGROUND_QUEUES; ++slot)
+                {
+                    BattleGroundQueueTypeId queueTypeId = member[i]->GetBattleGroundQueueTypeId(slot);
+                    if (queueTypeId == BATTLEGROUND_QUEUE_NONE)
+                        continue;
+                    WorldPacket leave(CMSG_BATTLEFIELD_PORT, 20);
+                    leave << uint8(BattleGroundMgr::BgArenaType(queueTypeId)) << uint8(0)
+                          << uint32(BattleGroundMgr::BgTemplateId(queueTypeId)) << uint16(0) << uint8(0);
+                    member[i]->GetSession()->HandleBattlefieldPortOpcode(leave);
+                    sLog.outBasic("ArenaMatchmaker: %s still holds queue %u, leaving before join",
+                                  member[i]->GetName(), uint32(queueTypeId));
+                }
+                return;     // try again next tick once the slots are gone
+            }
+        }
+
+        if (!joinSent)
+        {
+            // resolve the live battlemaster: constructed static guids break
+            // under the core's dynamic-guid mode, so search the grid instead
+            Creature* battlemaster = nullptr;
+            MaNGOS::NearestCreatureEntryWithLiveStateInObjectRangeCheck check(*member[0], 19911, true, false, 60.0f);
+            MaNGOS::CreatureLastSearcher<MaNGOS::NearestCreatureEntryWithLiveStateInObjectRangeCheck> searcher(battlemaster, check);
+            Cell::VisitGridObjects(member[0], searcher, 60.0f);
+            if (!battlemaster)
+            {
+                abortFill("no battlemaster in range after teleport");
+                return;
+            }
+            uint8 arenaSlot = needType == ARENA_TYPE_2v2 ? 0 : needType == ARENA_TYPE_3v3 ? 1 : 2;
+            WorldPacket join(CMSG_BATTLEMASTER_JOIN_ARENA, 20);
+            join << battlemaster->GetObjectGuid()
+                 << arenaSlot << uint8(1) << uint8(1);      // asGroup, isRated
+            member[0]->GetSession()->HandleBattlemasterJoinArena(join);
+            joinSent = true;
+            sLog.outBasic("ArenaMatchmaker: team %u sent rated join at battlemaster (map %u)", fillTeamId, bm.map);
+            return;
+        }
+
+        // join round-trips through the queue thread; wait for the slot
+        BattleGroundQueueTypeId queueTypeId = BattleGroundMgr::BgQueueTypeId(BATTLEGROUND_AA, needType);
+        if (member[0]->GetBattleGroundQueueIndex(queueTypeId) < PLAYER_MAX_BATTLEGROUND_QUEUES)
+        {
+            stage = FILL_QUEUED;
+            deadline = now + 120;
+            lastPortSend = 0;
+            sLog.outBasic("ArenaMatchmaker: team %u is queued, awaiting invites", fillTeamId);
+        }
+        return;
+    }
+
+    if (stage == FILL_QUEUED)
+    {
+        int inBg = 0;
+        for (int i = 0; i < 2; ++i)
+            if (member[i]->InBattleGround())
+                ++inBg;
+        if (inBg == 2)
+        {
+            sLog.outBasic("ArenaMatchmaker: team %u ported into the arena — fill complete", fillTeamId);
+            stage = FILL_IDLE;
+            fillTeamId = 0;
+            joinSent = false;
+            cooldownUntil = now + 60;
+            return;
+        }
+
+        if (now < lastPortSend + 10)
+            return;
+        for (int i = 0; i < 2; ++i)
+        {
+            Player* bot = member[i];
+            if (bot->InBattleGround() || bot->IsBeingTeleported())
+                continue;
+            for (uint32 slot = 0; slot < PLAYER_MAX_BATTLEGROUND_QUEUES; ++slot)
+            {
+                BattleGroundQueueTypeId queueTypeId = bot->GetBattleGroundQueueTypeId(slot);
+                if (queueTypeId == BATTLEGROUND_QUEUE_NONE ||
+                    !bot->IsInvitedForBattleGroundQueueType(queueTypeId))
+                    continue;
+                WorldPacket accept(CMSG_BATTLEFIELD_PORT, 20);
+                accept << uint8(BattleGroundMgr::BgArenaType(queueTypeId)) << uint8(0)
+                       << uint32(BattleGroundMgr::BgTemplateId(queueTypeId)) << uint16(0) << uint8(1);
+                bot->GetSession()->HandleBattlefieldPortOpcode(accept);
+                lastPortSend = now;
+                sLog.outBasic("ArenaMatchmaker: accepted arena invite for %s", bot->GetName());
+            }
+        }
+    }
+#endif
+}
+
+// Skirmish sibling of the deterministic matchmaker: a real player in a
+// non-rated arena queue needs warm bodies, not teams. Keep a small pool of
+// level-capped free bots parked at their capital battlemaster and solo-queued
+// for that arena size; the queue's selection pools do the rest. Invites are
+// accepted here on the 3s cadence instead of trusting ambient AI (observed
+// failure: bot accepts after its queue entry is already gone —
+// "itrplayerstatus not found" — and the match starts hollow).
+void RandomPlayerbotMgr::DeterministicSkirmishFill()
+{
+#ifdef MANGOSBOT_TWO
+    static time_t lastTick = 0;
+    time_t now = time(nullptr);
+    if (now < lastTick + 3)
+        return;
+    lastTick = now;
+
+    // which non-rated arena queue needs players?
+    ArenaType needType = ARENA_TYPE_NONE;
+    for (int i = BG_BRACKET_ID_FIRST; i < MAX_BATTLEGROUND_BRACKETS && !needType; ++i)
+        for (int j = BATTLEGROUND_QUEUE_AV; j < MAX_BATTLEGROUND_QUEUE_TYPES && !needType; ++j)
+            if (NeedBots[j][i][0])
+                if (ArenaType type = sServerFacade.BgArenaType(BattleGroundQueueTypeId(j)))
+                    needType = type;
+
+    static std::vector<ObjectGuid> pool;
+    if (!needType)
+    {
+        pool.clear();
+        return;
+    }
+
+    BattleGroundQueueTypeId queueTypeId = BattleGroundMgr::BgQueueTypeId(BATTLEGROUND_AA, needType);
+    uint32 const wanted = uint32(needType) * 2 - 1;     // worst case: solo real player
+
+    // drop pool members that vanished or landed in a match
+    pool.erase(std::remove_if(pool.begin(), pool.end(), [&](ObjectGuid guid)
+    {
+        Player* bot = sObjectMgr.GetPlayer(guid);
+        return !bot || !bot->IsInWorld() || bot->InBattleGround();
+    }), pool.end());
+
+    // recruit online spare bots up to the wanted count
+    if (pool.size() < wanted)
+    {
+        ForEachPlayerbot([&](Player* bot)
+        {
+            if (pool.size() >= wanted)
+                return;
+            if (!bot || !bot->IsInWorld() || bot->InBattleGround() || bot->IsBeingTeleported())
+                return;
+            if (bot->GetLevel() < DEFAULT_MAX_LEVEL || !IsFreeBot(bot) || bot->InBattleGroundQueue())
+                return;
+            if (std::find(pool.begin(), pool.end(), bot->GetObjectGuid()) != pool.end())
+                return;
+            if (bot->GetGroup())
+                bot->GetGroup()->RemoveMember(bot->GetObjectGuid(), 0);
+            if (bot->GetPlayerbotAI())
+                bot->GetPlayerbotAI()->Reset();
+            bool alliance = bot->GetTeam() == ALLIANCE;
+            bot->TeleportTo(alliance ? 0 : 1,
+                            (alliance ? -8818.0f : 1680.0f) + frand(-3.0f, 3.0f),
+                            alliance ? 663.0f : -4460.0f,
+                            alliance ? 96.8f : 20.5f,
+                            alliance ? 2.2f : 1.5f);
+            pool.push_back(bot->GetObjectGuid());
+            sLog.outBasic("ArenaMatchmaker: recruited %s for %uv%u skirmish fill",
+                          bot->GetName(), uint32(needType), uint32(needType));
+        });
+    }
+
+    // walk the pool: queue the arrived, accept the invited
+    for (ObjectGuid guid : pool)
+    {
+        Player* bot = sObjectMgr.GetPlayer(guid);
+        if (!bot || !bot->IsInWorld() || bot->IsBeingTeleported() || bot->InBattleGround())
+            continue;
+
+        if (bot->IsInvitedForBattleGroundQueueType(queueTypeId))
+        {
+            WorldPacket accept(CMSG_BATTLEFIELD_PORT, 20);
+            accept << uint8(needType) << uint8(0)
+                   << uint32(BATTLEGROUND_AA) << uint16(0) << uint8(1);
+            bot->GetSession()->HandleBattlefieldPortOpcode(accept);
+            sLog.outBasic("ArenaMatchmaker: accepted skirmish invite for %s", bot->GetName());
+            continue;
+        }
+
+        if (bot->GetBattleGroundQueueIndex(queueTypeId) < PLAYER_MAX_BATTLEGROUND_QUEUES)
+            continue;                                   // already queued, waiting
+
+        bool alliance = bot->GetTeam() == ALLIANCE;
+        if (bot->GetMapId() != uint32(alliance ? 0 : 1) ||
+            bot->GetDistance2d(alliance ? -8818.0f : 1680.0f, alliance ? 663.0f : -4460.0f) > 50.0f)
+            continue;                                   // still travelling
+
+        Creature* battlemaster = nullptr;
+        MaNGOS::NearestCreatureEntryWithLiveStateInObjectRangeCheck check(*bot, 19911, true, false, 60.0f);
+        MaNGOS::CreatureLastSearcher<MaNGOS::NearestCreatureEntryWithLiveStateInObjectRangeCheck> searcher(battlemaster, check);
+        Cell::VisitGridObjects(bot, searcher, 60.0f);
+        if (!battlemaster)
+            continue;
+        uint8 arenaSlot = needType == ARENA_TYPE_2v2 ? 0 : needType == ARENA_TYPE_3v3 ? 1 : 2;
+        WorldPacket join(CMSG_BATTLEMASTER_JOIN_ARENA, 20);
+        join << battlemaster->GetObjectGuid()
+             << arenaSlot << uint8(0) << uint8(0);      // solo, non-rated
+        bot->GetSession()->HandleBattlemasterJoinArena(join);
+        sLog.outBasic("ArenaMatchmaker: %s solo-queued %uv%u skirmish",
+                      bot->GetName(), uint32(needType), uint32(needType));
+    }
+#endif
 }
 
 void RandomPlayerbotMgr::CheckBgQueue()
@@ -1540,10 +1994,6 @@ void RandomPlayerbotMgr::CheckBgQueue()
         if (!player || !player->IsInWorld())
             continue;
 
-        bool realPlayer = player->GetPlayerbotAI() == nullptr;   // diagnosis
-        if (realPlayer)
-            sLog.outBasic("BGCheck: real player %s InBGQueue=%u", player->GetName(), uint32(player->InBattleGroundQueue()));
-
         if (!player->InBattleGroundQueue())
             continue;
 
@@ -1565,25 +2015,13 @@ void RandomPlayerbotMgr::CheckBgQueue()
 #ifdef MANGOSBOT_TWO
             BattleGround* bg = sBattleGroundMgr.GetBattleGroundTemplate(bgTypeId);
             if (!bg)
-            {
-                if (realPlayer)
-                    sLog.outBasic("BGCheck: %s NO bg template for type %u", player->GetName(), uint32(bgTypeId));
                 continue;
-            }
             uint32 mapId = bg->GetMapId();
             PvPDifficultyEntry const* pvpDiff = GetBattlegroundBracketByLevel(mapId, player->GetLevel());
             if (!pvpDiff)
-            {
-                if (realPlayer)
-                    sLog.outBasic("BGCheck: %s NO pvpDiff for map %u at level %u (queueType %u)",
-                                  player->GetName(), mapId, player->GetLevel(), uint32(queueTypeId));
                 continue;
-            }
 
             BattleGroundBracketId bracketId = pvpDiff->GetBracketId();
-            if (realPlayer)
-                sLog.outBasic("BGCheck: %s queueType %u bracket %u — posting arena accounting",
-                              player->GetName(), uint32(queueTypeId), uint32(bracketId));
 #endif
 #if defined(MANGOSBOT_ONE) || defined(MANGOSBOT_TWO)
             if (ArenaType arenaType = sServerFacade.BgArenaType(queueTypeId))
