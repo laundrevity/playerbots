@@ -724,6 +724,8 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 elapsed, bool minimal)
     {
         if (time(nullptr) > (BgCheckTimer + 30))
             CheckBgQueue();
+
+        AcceptPendingBgInvites();   // self-throttled (10s)
     }
 
     if (time(nullptr) > (OfflineGroupBotsTimer + 5) && players.size())
@@ -1417,6 +1419,40 @@ void RandomPlayerbotMgr::LoadBattleMastersCache()
 
     sLog.outString(">> Loaded %u battlemaster entries", count);
     sLog.outString();
+}
+
+// Safety net for lost queue invites: a bot whose login/logout churn ate the
+// SMSG_BATTLEFIELD_STATUS packet never accepts, idles out the 2-minute
+// window ("removing player ... not pressing enter battle in time") and the
+// match runs short-handed (observed as a 2v0). The invite state survives on
+// the Player, so sweep it and accept directly — no packet required.
+void RandomPlayerbotMgr::AcceptPendingBgInvites()
+{
+    static time_t lastSweep = 0;    // invite window is 120s; 10s is plenty
+    if (time(nullptr) < lastSweep + 10)
+        return;
+    lastSweep = time(nullptr);
+
+    ForEachPlayerbot([&](Player* bot)
+    {
+        if (!bot || !bot->IsInWorld() || bot->InBattleGround() || bot->IsBeingTeleported())
+            return;
+        for (uint32 slot = 0; slot < PLAYER_MAX_BATTLEGROUND_QUEUES; ++slot)
+        {
+            BattleGroundQueueTypeId queueTypeId = bot->GetBattleGroundQueueTypeId(slot);
+            if (queueTypeId == BATTLEGROUND_QUEUE_NONE ||
+                !bot->IsInvitedForBattleGroundQueueType(queueTypeId))
+                continue;
+
+            WorldPacket packet(CMSG_BATTLEFIELD_PORT, 20);
+            packet << uint8(BattleGroundMgr::BgArenaType(queueTypeId)) << uint8(0)
+                   << uint32(BattleGroundMgr::BgTemplateId(queueTypeId)) << uint16(0) << uint8(1);
+            bot->GetSession()->HandleBattlefieldPortOpcode(packet);
+            sLog.outBasic("RandomPlayerbotMgr: swept pending bg invite for bot %s (queue %u)",
+                          bot->GetName(), uint32(queueTypeId));
+            return;
+        }
+    });
 }
 
 void RandomPlayerbotMgr::CheckBgQueue()
