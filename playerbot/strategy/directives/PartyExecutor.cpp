@@ -648,10 +648,27 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
     if (KeepPartyBuffed(ai, bot))
         return;
 
-    // warlock upkeep: a demon out and a healthstone in the bags
+    // warlock upkeep: a demon out, soul link on, a healthstone in the bags
     if (bot->getClass() == CLASS_WARLOCK)
     {
-        if (!bot->GetPet())
+        Pet* demon = bot->GetPet();
+
+        // arena prep, the classic lock open: hard-cast a voidwalker, sac it
+        // for the absorb shield, hard-cast the felhunter after — Fel
+        // Domination stays banked for a mid-fight pet death
+        if (bot->InArena() && !ai->HasAura("sacrifice", bot))
+        {
+            if (!demon && Cast(ai, "summon voidwalker", bot))
+                return;
+            if (demon && demon->GetEntry() == 1860 /*Voidwalker*/ && demon->IsAlive())
+            {
+                demon->CastSpell(demon, 27273 /*Sacrifice r7*/, TRIGGERED_NONE);
+                ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+                return;
+            }
+        }
+
+        if (!demon)
         {
             if (Cast(ai, "summon felhunter", bot) || Cast(ai, "summon voidwalker", bot) ||
                 Cast(ai, "summon imp", bot))
@@ -660,6 +677,9 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
                           bot->GetName(), ai->CanCastSpell("summon felhunter", bot, 0),
                           ai->CanCastSpell("summon imp", bot, 0));
         }
+        else if (demon->IsAlive() && !ai->HasAura("soul link", bot) && Cast(ai, "soul link", demon))
+            return;     // SL/SL without soul link is half a spec
+
         if (!FindBagItem(bot, HEALTHSTONE_IDS, sizeof(HEALTHSTONE_IDS) / sizeof(uint32)))
         {
             if (Cast(ai, "create healthstone", bot))
@@ -1343,14 +1363,30 @@ bool PartyExecutor::WarlockTick(PlayerbotAI* ai, Player* bot, Unit* target)
         return true;
     }
 
-    // the demon fights or the warlock is half a class: keep it on target
+    // pet died mid-fight: Fel Domination is exactly for this — instant
+    // replacement so soul link comes back (never hard-cast 10s in combat)
+    if (!bot->GetPet())
+    {
+        if (Cast(ai, "fel domination", bot))
+            return true;
+        if (ai->HasAura("fel domination", bot) &&
+            (Cast(ai, "summon felhunter", bot) || Cast(ai, "summon voidwalker", bot)))
+            return true;
+    }
+
+    // the demon fights or the warlock is half a class: keep it on target,
+    // and keep soul link up even mid-fight (it drops when the pet dies)
     if (Pet* pet = bot->GetPet())
+    {
+        if (pet->IsAlive() && !ai->HasAura("soul link", bot) && Cast(ai, "soul link", pet))
+            return true;
         if (pet->IsAlive() && pet->GetVictim() != target && pet->AI())
         {
             pet->AttackStop();
             pet->GetMotionMaster()->Clear();
             pet->AI()->AttackStart(target);
         }
+    }
 
     // panic buttons: coil for the heal+cc, fear the melee eating us alive
     if (bot->GetHealthPercent() < 50.0f && Cast(ai, "death coil", target))
