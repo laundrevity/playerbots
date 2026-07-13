@@ -206,9 +206,8 @@ bool PartyExecutor::ShouldOwn(PlayerbotAI* ai, Player* bot)
     // The LLM shot-caller stays exclusive to real-player parties (ArenaTick
     // requires a master), preserving the human side's edge.
     if (bot->InArena())
-        // masterless HEALERS keep the old engine (no healer tick exists yet:
-        // executor ownership would reduce them to wanding)
-        return bot->IsAlive() && (ai->HasRealPlayerMaster() || !PlayerbotAI::IsHeal(bot));
+        // every combatant including masterless healers (HealerTriageTick)
+        return bot->IsAlive();
     if (!ai->HasRealPlayerMaster())
         return false;
     if (bot->InBattleGround())
@@ -773,6 +772,39 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         bot->GetBattleGround()->GetStatus() == STATUS_IN_PROGRESS &&
         !ai->HasAura("stealth", bot))
     {
+        // healers advance WITH the team, not at the enemy: shadow the
+        // nearest living dps partner (12yd leash); solo-survivor healers
+        // fall through to the enemy-convergence path below
+        if (PlayerbotAI::IsHeal(bot))
+            if (Group* arenaGroup = bot->GetGroup())
+            {
+                Player* escort = nullptr;
+                float escortDistance = 10000.0f;
+                for (GroupReference* itr = arenaGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+                {
+                    Player* member = itr->getSource();
+                    if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() ||
+                        PlayerbotAI::IsHeal(member))
+                        continue;
+                    float distance = sServerFacade.GetDistance2d(bot, member);
+                    if (distance < escortDistance)
+                    {
+                        escortDistance = distance;
+                        escort = member;
+                    }
+                }
+                if (escort)
+                {
+                    if (escortDistance > 12.0f)
+                    {
+                        bot->GetMotionMaster()->MovePoint(0, escort->GetPositionX(), escort->GetPositionY(),
+                                                          escort->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+                    }
+                    return;
+                }
+            }
+
         AiObjectContext* arenaContext = ai->GetAiObjectContext();
         std::list<ObjectGuid> possible = arenaContext->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
         Unit* enemy = nullptr;
@@ -1487,6 +1519,109 @@ bool PartyExecutor::WarlockTick(PlayerbotAI* ai, Player* bot, Unit* target)
     return false;
 }
 
+// Generic healer triage: lowest groupmate in range gets the class's heal
+// ladder. Built so ARENA opponent healers can live on the executor (the
+// old engine left them camping the start room — observed as "fighting
+// them one at a time"). Movement: stay glued to the triage target /
+// partner; never chase enemies.
+bool PartyExecutor::HealerTriageTick(PlayerbotAI* ai, Player* bot)
+{
+    Group* group = bot->GetGroup();
+
+    Player* lowest = bot;
+    float lowestPct = bot->GetHealthPercent();
+    Player* partner = nullptr;          // nearest living non-self groupmate
+    float partnerDistance = 10000.0f;
+    if (group)
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() ||
+                member->GetMapId() != bot->GetMapId())
+                continue;
+            float distance = sServerFacade.GetDistance2d(bot, member);
+            if (distance < partnerDistance)
+            {
+                partnerDistance = distance;
+                partner = member;
+            }
+            if (distance <= 40.0f && member->GetHealthPercent() < lowestPct)
+            {
+                lowestPct = member->GetHealthPercent();
+                lowest = member;
+            }
+        }
+
+    // a hurt partner out of heal range beats everything: close the gap
+    if (partner && partnerDistance > 35.0f)
+    {
+        bot->GetMotionMaster()->MovePoint(0, partner->GetPositionX(), partner->GetPositionY(),
+                                          partner->GetPositionZ(), FORCED_MOVEMENT_RUN);
+        return true;
+    }
+
+    switch (bot->getClass())
+    {
+        case CLASS_SHAMAN:
+            return RestoShamanTick(ai, bot);
+        case CLASS_PRIEST:
+            if (lowestPct < 35.0f)
+            {
+                if (!ai->HasAura("weakened soul", lowest) && Cast(ai, "power word: shield", lowest))
+                    return true;
+                if (Cast(ai, "flash heal", lowest))
+                    return true;
+            }
+            if (lowestPct < 60.0f && Cast(ai, "flash heal", lowest))
+                return true;
+            if (lowestPct < 85.0f && !ai->HasAura("renew", lowest) && Cast(ai, "renew", lowest))
+                return true;
+            break;
+        case CLASS_PALADIN:
+            if (lowestPct < 35.0f)
+            {
+                if (Cast(ai, "holy shock", lowest))
+                    return true;
+                if (Cast(ai, "flash of light", lowest))
+                    return true;
+            }
+            if (lowestPct < 60.0f && Cast(ai, "holy light", lowest))
+                return true;
+            if (lowestPct < 85.0f && Cast(ai, "flash of light", lowest))
+                return true;
+            break;
+        case CLASS_DRUID:
+            if (lowestPct < 35.0f)
+            {
+                if (Cast(ai, "nature's swiftness", bot))
+                    return true;
+                if (Cast(ai, "healing touch", lowest))
+                    return true;
+            }
+            if (lowestPct < 60.0f)
+            {
+                if (!ai->HasAura("regrowth", lowest) && Cast(ai, "regrowth", lowest))
+                    return true;
+                if (Cast(ai, "healing touch", lowest))
+                    return true;
+            }
+            if (lowestPct < 85.0f && !ai->HasAura("rejuvenation", lowest) && Cast(ai, "rejuvenation", lowest))
+                return true;
+            break;
+        default:
+            break;
+    }
+
+    // nothing to heal: hold formation on the partner (12yd leash)
+    if (partner && partnerDistance > 12.0f)
+    {
+        bot->GetMotionMaster()->MovePoint(0, partner->GetPositionX(), partner->GetPositionY(),
+                                          partner->GetPositionZ(), FORCED_MOVEMENT_RUN);
+        return true;
+    }
+    return false;
+}
+
 // Resto shaman: triage owns the tick — the healer never chases targets.
 // Totem suite drops once the fight starts and refreshes when destroyed.
 bool PartyExecutor::RestoShamanTick(PlayerbotAI* ai, Player* bot)
@@ -1562,12 +1697,7 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     // healers: triage owns the tick — never fall through to dps logic
     if (PlayerbotAI::IsHeal(bot))
     {
-        bool acted = false;
-        switch (bot->getClass())
-        {
-            case CLASS_SHAMAN: acted = RestoShamanTick(ai, bot); break;
-            default: break;     // TODO priest/paladin/druid healer kits
-        }
+        bool acted = HealerTriageTick(ai, bot);
         ai->SetAIInternalUpdateDelay(acted ? AFTER_CAST_DELAY_MS : IDLE_DELAY_MS);
         return;
     }
