@@ -1533,17 +1533,20 @@ bool PartyExecutor::ShadowPriestTick(PlayerbotAI* ai, Player* bot, Unit* target)
         !ai->HasAura("weakened soul", bot) && Cast(ai, "power word: shield", bot))
         return true;
 
+    // canonical 3.3.5 priority: VT > DP > Mind Blast > SW:P > Mind Flay
+    // (DP is wotlk-trainable; on TBC it's undead-only and the legality
+    // gate just skips it. SW:D stays last as a moving/final filler.)
     if (!ai->HasAura("vampiric touch", target) && Cast(ai, "vampiric touch", target))
         return true;
-    if (!ai->HasAura("shadow word: pain", target) && Cast(ai, "shadow word: pain", target))
-        return true;
-    if (!ai->HasAura("vampiric embrace", target) && Cast(ai, "vampiric embrace", target))
+    if (!ai->HasAura("devouring plague", target) && Cast(ai, "devouring plague", target))
         return true;
     if (Cast(ai, "mind blast", target))
         return true;
-    if (Cast(ai, "shadow word: death", target))
+    if (!ai->HasAura("shadow word: pain", target) && Cast(ai, "shadow word: pain", target))
         return true;
     if (Cast(ai, "mind flay", target))
+        return true;
+    if (Cast(ai, "shadow word: death", target))
         return true;
     return false;
 }
