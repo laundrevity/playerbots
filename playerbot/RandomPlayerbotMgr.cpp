@@ -1710,6 +1710,21 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
             return;
         }
 
+    // an invite can pop (and get accepted by the global invite sweeper)
+    // faster than our tick: members already inside the arena mean the join
+    // worked — hand over to FILL_QUEUED instead of timing out at the
+    // battlemaster position check and falsely blacklisting the team
+    if (stage == FILL_PREP && joinSent)
+        for (uint32 i = 0; i < fillCount; ++i)
+            if (member[i]->InBattleGround())
+            {
+                stage = FILL_QUEUED;
+                deadline = now + 120;
+                lastPortSend = 0;
+                sLog.outBasic("ArenaMatchmaker: team %u already porting in, skipping to invite watch", fillTeamId);
+                break;
+            }
+
     if (stage == FILL_PREP)
     {
         BmSpawn const& bm = member[0]->GetTeam() == ALLIANCE ? bmAlliance : bmHorde;
