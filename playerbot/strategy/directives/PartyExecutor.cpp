@@ -1552,8 +1552,15 @@ bool PartyExecutor::HealerTriageTick(PlayerbotAI* ai, Player* bot)
             }
         }
 
+    // movement belongs to SELF-DIRECTED bots only (masterless arena
+    // opponents): mastered healers ride the module's follow system, and
+    // hijacking them here starved the whole tick behind a mobile master
+    // (observed: resto shaman forever chasing a charging warrior, zero
+    // casts, zero totems)
+    bool const selfDirected = !ai->HasRealPlayerMaster();
+
     // a hurt partner out of heal range beats everything: close the gap
-    if (partner && partnerDistance > 35.0f)
+    if (selfDirected && partner && partnerDistance > 35.0f)
     {
         bot->GetMotionMaster()->MovePoint(0, partner->GetPositionX(), partner->GetPositionY(),
                                           partner->GetPositionZ(), FORCED_MOVEMENT_RUN);
@@ -1613,7 +1620,7 @@ bool PartyExecutor::HealerTriageTick(PlayerbotAI* ai, Player* bot)
     }
 
     // nothing to heal: hold formation on the partner (12yd leash)
-    if (partner && partnerDistance > 12.0f)
+    if (selfDirected && partner && partnerDistance > 12.0f)
     {
         bot->GetMotionMaster()->MovePoint(0, partner->GetPositionX(), partner->GetPositionY(),
                                           partner->GetPositionZ(), FORCED_MOVEMENT_RUN);
@@ -1662,15 +1669,53 @@ bool PartyExecutor::RestoShamanTick(PlayerbotAI* ai, Player* bot)
     // 2. totem suite by SLOT ownership — the old self-aura check never saw
     // the buff when the shaman stood outside totem radius, so she re-dropped
     // windfury every tick (GCD + mana gone, zero heals). Totems also wait
-    // when mana is needed for triage. Arena: grounding owns the air slot.
+    // when mana is needed for triage. In pvp the picks read the enemy comp:
+    // fear class on the other side -> tremor; rogue -> poison cleansing;
+    // caster and no melee teammate to serve -> grounding over windfury.
     if (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) > 25)
     {
+        bool enemyCaster = false, enemyFear = false, enemyRogue = false;
+        if (bot->InArena())
+        {
+            std::list<ObjectGuid> possible =
+                ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+            for (const ObjectGuid& guid : possible)
+            {
+                Unit* candidate = ai->GetUnit(guid);
+                if (!candidate || !candidate->IsPlayer() || !candidate->IsAlive())
+                    continue;
+                switch (candidate->getClass())
+                {
+                    case CLASS_MAGE: case CLASS_SHAMAN: case CLASS_DRUID:
+                        enemyCaster = true; break;
+                    case CLASS_WARLOCK: case CLASS_PRIEST:
+                        enemyCaster = true; enemyFear = true; break;
+                    case CLASS_WARRIOR:
+                        enemyFear = true; break;
+                    case CLASS_ROGUE:
+                        enemyRogue = true; break;
+                    default: break;
+                }
+            }
+        }
+
+        bool meleeTeammate = false;
+        if (group)
+            for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+                if (Player* member = itr->getSource())
+                    if (member != bot && member->IsAlive() && member->IsInWorld() &&
+                        !ai->IsRanged(member) &&
+                        sServerFacade.GetDistance2d(bot, member) < 20.0f)
+                        meleeTeammate = true;
+
         if (!bot->GetTotem(TOTEM_SLOT_AIR) &&
-            Cast(ai, bot->InArena() ? "grounding totem" : "windfury totem", bot))
+            Cast(ai, (enemyCaster && !meleeTeammate) ? "grounding totem" : "windfury totem", bot))
             return true;
-        if (!bot->GetTotem(TOTEM_SLOT_EARTH) && Cast(ai, "strength of earth totem", bot))
+        if (!bot->GetTotem(TOTEM_SLOT_EARTH) &&
+            Cast(ai, enemyFear ? "tremor totem" : "strength of earth totem", bot))
             return true;
-        if (!bot->GetTotem(TOTEM_SLOT_WATER) && Cast(ai, "mana spring totem", bot))
+        if (!bot->GetTotem(TOTEM_SLOT_WATER) &&
+            Cast(ai, enemyRogue ? "poison cleansing totem" : "mana spring totem", bot))
             return true;
     }
 
