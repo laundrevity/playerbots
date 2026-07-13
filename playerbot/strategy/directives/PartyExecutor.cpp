@@ -134,6 +134,17 @@ namespace
         return best;
     }
 
+    // breakable incapacitates: hitting these UNDOES the team's crowd control
+    // (sap/blind/gouge/polymorph break on any damage; fear breaks fast).
+    // Deliberate stuns (cheap shot, kidney) are NOT in this list — a stunned
+    // kill target is exactly what you keep hitting.
+    bool IsSoftCrowdControlled(PlayerbotAI* ai, Unit* unit)
+    {
+        return ai->HasAura("sap", unit) || ai->HasAura("blind", unit) ||
+               ai->HasAura("gouge", unit) || ai->HasAura("polymorph", unit) ||
+               unit->HasAuraType(SPELL_AURA_MOD_FEAR);
+    }
+
     // ---- tank routes (encounters/party_routes.json, installed to etc/) ----
     // The offline DSL: map id -> ordered boss creature_template entries.
     // Spawn guid/position resolved once from the world DB.
@@ -727,38 +738,102 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         if (bot->InArena() && !ai->HasAura("stealth", bot) && Cast(ai, "stealth", bot))
             return;
 
-        // arena, stealthed, out of combat (gates or a vanish reset): creep
-        // to the nearest enemy and open with cheap shot — never auto-attack
-        // out of stealth
+        // arena, stealthed, out of combat (gates or a vanish reset): the
+        // full rogue opener. Sap first — the enemy healer, or in double dps
+        // whoever we are NOT opening on (TBC sap breaks neither stealth nor
+        // starts combat) — then creep to the kill target and cheap shot.
+        // Never auto-attack out of stealth.
         if (bot->InArena() && ai->HasAura("stealth", bot))
         {
             AiObjectContext* stealthContext = ai->GetAiObjectContext();
             std::list<ObjectGuid> possible = stealthContext->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
-            Unit* enemy = nullptr;
-            float best = 60.0f;
+            std::vector<Unit*> enemies;
             for (const ObjectGuid& guid : possible)
             {
                 Unit* candidate = ai->GetUnit(guid);
-                if (!candidate || !candidate->IsPlayer() || !candidate->IsAlive())
-                    continue;
-                float distance = sServerFacade.GetDistance2d(bot, candidate);
-                if (distance < best)
+                if (candidate && candidate->IsPlayer() && candidate->IsAlive() &&
+                    sServerFacade.GetDistance2d(bot, candidate) < 60.0f)
+                    enemies.push_back(candidate);
+            }
+
+            // the skull mark names the kill target; sap goes on someone else
+            Unit* marked = nullptr;
+            if (Group* group = bot->GetGroup())
+                if (Unit* skull = ai->GetUnit(ObjectGuid(group->GetTargetIcon(7))))
+                    if (skull->IsAlive())
+                        marked = skull;
+
+            // sap target: never worth stalking a lone survivor for
+            bool knowsSap = bot->HasSpell(6770) || bot->HasSpell(2070) || bot->HasSpell(11297);
+            Unit* sapTarget = nullptr;
+            if (enemies.size() >= 2 && knowsSap)
+            {
+                Unit* healer = NearestEnemyHealer(ai, bot);
+                if (healer && healer != marked)
+                    sapTarget = healer;
+                else if (!healer)
                 {
-                    best = distance;
-                    enemy = candidate;
+                    // double dps: sap the one the team reaches last
+                    float farthest = 0.0f;
+                    for (Unit* enemy : enemies)
+                    {
+                        if (enemy == marked)
+                            continue;
+                        float distance = sServerFacade.GetDistance2d(bot, enemy);
+                        if (distance > farthest)
+                        {
+                            farthest = distance;
+                            sapTarget = enemy;
+                        }
+                    }
                 }
             }
-            if (enemy)
+
+            // phase 1: deliver the sap (done once it lands or combat finds him)
+            if (sapTarget && !ai->HasAura("sap", sapTarget) && !sapTarget->IsInCombat())
             {
-                if (bot->CanReachWithMeleeAttack(enemy))
+                if (bot->CanReachWithMeleeAttack(sapTarget))
                 {
-                    if (Cast(ai, "cheap shot", enemy))
+                    if (Cast(ai, "sap", sapTarget))
                         return;
                 }
                 else
                 {
-                    bot->GetMotionMaster()->MovePoint(0, enemy->GetPositionX(), enemy->GetPositionY(),
-                                                      enemy->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                    bot->GetMotionMaster()->MovePoint(0, sapTarget->GetPositionX(), sapTarget->GetPositionY(),
+                                                      sapTarget->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                    ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+                    return;
+                }
+            }
+
+            // phase 2: creep to the kill target and open
+            Unit* openTarget = marked;
+            if (!openTarget)
+            {
+                float best = 60.0f;
+                for (Unit* enemy : enemies)
+                {
+                    if (enemy == sapTarget || IsSoftCrowdControlled(ai, enemy))
+                        continue;
+                    float distance = sServerFacade.GetDistance2d(bot, enemy);
+                    if (distance < best)
+                    {
+                        best = distance;
+                        openTarget = enemy;
+                    }
+                }
+            }
+            if (openTarget)
+            {
+                if (bot->CanReachWithMeleeAttack(openTarget))
+                {
+                    if (Cast(ai, "cheap shot", openTarget))
+                        return;
+                }
+                else
+                {
+                    bot->GetMotionMaster()->MovePoint(0, openTarget->GetPositionX(), openTarget->GetPositionY(),
+                                                      openTarget->GetPositionZ(), FORCED_MOVEMENT_RUN);
                     ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
                     return;
                 }
@@ -1003,22 +1078,38 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
                     return focused;
         }
 
-    // arena: nobody engaged yet — the nearest enemy player IS the fight
+    // arena: nobody engaged yet — the nearest enemy player IS the fight.
+    // Skip soft-CC'd enemies (sap/blind/poly/fear): hitting them undoes the
+    // team's control. Only when EVERYONE is under CC does the nearest one
+    // become fair game (someone has to break the stalemate).
     if (bot->InArena())
     {
         std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+        Unit* nearestControlled = nullptr;
+        float bestControlled = 1000.0f;
         for (const ObjectGuid& guid : possible)
         {
             Unit* candidate = ai->GetUnit(guid);
             if (!candidate || !candidate->IsPlayer() || sServerFacade.UnitIsDead(candidate))
                 continue;
             float distance = sServerFacade.GetDistance2d(bot, candidate);
+            if (IsSoftCrowdControlled(ai, candidate))
+            {
+                if (distance < bestControlled)
+                {
+                    bestControlled = distance;
+                    nearestControlled = candidate;
+                }
+                continue;
+            }
             if (distance < best)
             {
                 best = distance;
                 nearest = candidate;
             }
         }
+        if (!nearest)
+            nearest = nearestControlled;
     }
     return nearest;
 }
@@ -1225,7 +1316,9 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
         }
 
         // the enemy healer is everyone's problem: kick his casts even
-        // off-target; blind him when the kill target enters the window
+        // off-target; blind him when the kill target enters the window —
+        // but never blind through existing control (stun/fear/sap = DR and
+        // duration wasted)
         if (Unit* healer = NearestEnemyHealer(ai, bot))
         {
             if (healer != target)
@@ -1235,8 +1328,33 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
                     return true;
                 if (target->GetHealthPercent() < 50.0f &&
                     !healer->HasAuraType(SPELL_AURA_MOD_STUN) &&
-                    !healer->HasAuraType(SPELL_AURA_MOD_CONFUSE) && Cast(ai, "blind", healer))
+                    !healer->HasAuraType(SPELL_AURA_MOD_CONFUSE) &&
+                    !IsSoftCrowdControlled(ai, healer) && Cast(ai, "blind", healer))
                     return true;
+            }
+        }
+
+        // peel: an off-target enemy training my master eats a gouge — buys
+        // a free cast/drink window. Gouge on the KILL target is a trap (our
+        // own dots break it instantly), so only ever peel with it.
+        if (Player* master = ai->GetMaster())
+        {
+            if (master->IsAlive() && master != bot)
+            {
+                AiObjectContext* peelContext = ai->GetAiObjectContext();
+                std::list<ObjectGuid> possible = peelContext->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+                for (const ObjectGuid& guid : possible)
+                {
+                    Unit* menace = ai->GetUnit(guid);
+                    if (!menace || !menace->IsPlayer() || !menace->IsAlive() || menace == target)
+                        continue;
+                    if (menace->GetVictim() != master)
+                        continue;
+                    if (menace->HasAuraType(SPELL_AURA_MOD_STUN) || IsSoftCrowdControlled(ai, menace))
+                        continue;
+                    if (bot->CanReachWithMeleeAttack(menace) && Cast(ai, "gouge", menace))
+                        return true;
+                }
             }
         }
 
