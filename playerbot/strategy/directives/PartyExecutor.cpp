@@ -1519,6 +1519,35 @@ bool PartyExecutor::WarlockTick(PlayerbotAI* ai, Player* bot, Unit* target)
     return false;
 }
 
+// Shadow priest: form first, dots up, mind blast / SW:D on cooldown,
+// mind flay filler. Shield under pressure (castable in form); dispersion
+// is wotlk-only and simply fails the legality gate on TBC.
+bool PartyExecutor::ShadowPriestTick(PlayerbotAI* ai, Player* bot, Unit* target)
+{
+    if (!ai->HasAura("shadowform", bot) && Cast(ai, "shadowform", bot))
+        return true;
+
+    if (bot->GetHealthPercent() < 30.0f && Cast(ai, "dispersion", bot))
+        return true;
+    if (bot->GetHealthPercent() < 55.0f &&
+        !ai->HasAura("weakened soul", bot) && Cast(ai, "power word: shield", bot))
+        return true;
+
+    if (!ai->HasAura("vampiric touch", target) && Cast(ai, "vampiric touch", target))
+        return true;
+    if (!ai->HasAura("shadow word: pain", target) && Cast(ai, "shadow word: pain", target))
+        return true;
+    if (!ai->HasAura("vampiric embrace", target) && Cast(ai, "vampiric embrace", target))
+        return true;
+    if (Cast(ai, "mind blast", target))
+        return true;
+    if (Cast(ai, "shadow word: death", target))
+        return true;
+    if (Cast(ai, "mind flay", target))
+        return true;
+    return false;
+}
+
 // Generic healer triage: lowest groupmate in range gets the class's heal
 // ladder. Built so ARENA opponent healers can live on the executor (the
 // old engine left them camping the start room — observed as "fighting
@@ -1786,6 +1815,7 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
         case CLASS_PALADIN: acted = PlayerbotAI::IsTank(bot) ? ProtPaladinTick(ai, bot, target)
                                                             : RetPaladinTick(ai, bot, target); break;
         case CLASS_WARLOCK: acted = WarlockTick(ai, bot, target); break;
+        case CLASS_PRIEST:  acted = ShadowPriestTick(ai, bot, target); break;
         default:            acted = false; break;
     }
 
