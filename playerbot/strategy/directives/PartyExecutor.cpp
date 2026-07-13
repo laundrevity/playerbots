@@ -1659,13 +1659,20 @@ bool PartyExecutor::RestoShamanTick(PlayerbotAI* ai, Player* bot)
     if (lowestPct < 80.0f && Cast(ai, "lesser healing wave", lowest))
         return true;
 
-    // 2. totem suite (aura checks read the totem buff on the shaman herself)
-    if (!ai->HasAura("windfury totem", bot) && Cast(ai, "windfury totem", bot))
-        return true;
-    if (!ai->HasAura("strength of earth", bot) && Cast(ai, "strength of earth totem", bot))
-        return true;
-    if (!ai->HasAura("mana spring", bot) && Cast(ai, "mana spring totem", bot))
-        return true;
+    // 2. totem suite by SLOT ownership — the old self-aura check never saw
+    // the buff when the shaman stood outside totem radius, so she re-dropped
+    // windfury every tick (GCD + mana gone, zero heals). Totems also wait
+    // when mana is needed for triage. Arena: grounding owns the air slot.
+    if (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) > 25)
+    {
+        if (!bot->GetTotem(TOTEM_SLOT_AIR) &&
+            Cast(ai, bot->InArena() ? "grounding totem" : "windfury totem", bot))
+            return true;
+        if (!bot->GetTotem(TOTEM_SLOT_EARTH) && Cast(ai, "strength of earth totem", bot))
+            return true;
+        if (!bot->GetTotem(TOTEM_SLOT_WATER) && Cast(ai, "mana spring totem", bot))
+            return true;
+    }
 
     // 3. earth shield stays on the master (tank preference comes later)
     if (Player* master = ai->GetMaster())
