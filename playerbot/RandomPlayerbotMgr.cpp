@@ -1531,7 +1531,9 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
     enum FillStage { FILL_IDLE, FILL_LOGIN, FILL_PREP, FILL_QUEUED };
     static FillStage stage = FILL_IDLE;
     static uint32 fillTeamId = 0;
-    static ObjectGuid fillMember[2];
+    static ObjectGuid fillMember[5];                // sized for 5v5
+    static uint32 fillCount = 0;
+    static ArenaType fillType = ARENA_TYPE_NONE;    // snapshot: NeedBots can clear mid-fill
     static time_t deadline = 0;
     static time_t cooldownUntil = 0;
     static time_t lastPortSend = 0;
@@ -1552,6 +1554,8 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
         }
         stage = FILL_IDLE;
         fillTeamId = 0;
+        fillCount = 0;
+        fillType = ARENA_TYPE_NONE;
         joinSent = false;
     };
 
@@ -1570,7 +1574,7 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
 
         // pick a same-faction all-random-bot team of the needed size
         ArenaTeam* pick = nullptr;
-        ObjectGuid mem[2];
+        ObjectGuid mem[5];
         for (auto itr = sObjectMgr.GetArenaTeamMapBegin(); itr != sObjectMgr.GetArenaTeamMapEnd(); ++itr)
         {
             ArenaTeam* team = itr->second;
@@ -1625,13 +1629,15 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
         }
 
         fillTeamId = pick->GetId();
-        fillMember[0] = mem[0];
-        fillMember[1] = mem[1];
+        fillType = needType;
+        fillCount = uint32(needType);
+        for (uint32 i = 0; i < fillCount; ++i)
+            fillMember[i] = mem[i];
         deadline = now + 90;
         stage = FILL_LOGIN;
-        sLog.outBasic("ArenaMatchmaker: filling rated %uv%u with team %u <%s> (%s, %s)",
+        sLog.outBasic("ArenaMatchmaker: filling rated %uv%u with team %u <%s> (leader %s)",
                       uint32(needType), uint32(needType), pick->GetId(), pick->GetName().c_str(),
-                      fillMember[0].GetString().c_str(), fillMember[1].GetString().c_str());
+                      fillMember[0].GetString().c_str());
         // fall through into FILL_LOGIN this tick
     }
 
@@ -1644,14 +1650,14 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
         return;
     }
 
-    Player* member[2];
-    for (int i = 0; i < 2; ++i)
+    Player* member[5];
+    for (uint32 i = 0; i < fillCount; ++i)
         member[i] = sObjectMgr.GetPlayer(fillMember[i]);
 
     if (stage == FILL_LOGIN)
     {
         bool allOnline = true;
-        for (int i = 0; i < 2; ++i)
+        for (uint32 i = 0; i < fillCount; ++i)
         {
             if (member[i] && member[i]->IsInWorld())
                 continue;
@@ -1665,9 +1671,9 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
         if (!allOnline)
             return;
 
-        // one-shot prep: clear stale state and ship both to the battlemaster
+        // one-shot prep: clear stale state and ship everyone to the battlemaster
         BmSpawn const& bm = member[0]->GetTeam() == ALLIANCE ? bmAlliance : bmHorde;
-        for (int i = 0; i < 2; ++i)
+        for (uint32 i = 0; i < fillCount; ++i)
         {
             Player* bot = member[i];
             if (bot->InBattleGround())
@@ -1696,17 +1702,18 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
         return;
     }
 
-    // from here both members must stay resolvable
-    if (!member[0] || !member[1])
-    {
-        abortFill("member vanished");
-        return;
-    }
+    // from here every member must stay resolvable
+    for (uint32 i = 0; i < fillCount; ++i)
+        if (!member[i])
+        {
+            abortFill("member vanished");
+            return;
+        }
 
     if (stage == FILL_PREP)
     {
         BmSpawn const& bm = member[0]->GetTeam() == ALLIANCE ? bmAlliance : bmHorde;
-        for (int i = 0; i < 2; ++i)
+        for (uint32 i = 0; i < fillCount; ++i)
         {
             Player* bot = member[i];
             if (!bot->IsInWorld() || bot->IsBeingTeleported())
@@ -1730,11 +1737,13 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
             }
             sObjectMgr.AddGroup(group);
         }
-        if (member[1]->GetGroup() != group)
+        for (uint32 i = 1; i < fillCount; ++i)
         {
-            if (member[1]->GetGroup())
-                member[1]->GetGroup()->RemoveMember(member[1]->GetObjectGuid(), 0);
-            if (!group->AddMember(member[1]->GetObjectGuid(), member[1]->GetName()))
+            if (member[i]->GetGroup() == group)
+                continue;
+            if (member[i]->GetGroup())
+                member[i]->GetGroup()->RemoveMember(member[i]->GetObjectGuid(), 0);
+            if (!group->AddMember(member[i]->GetObjectGuid(), member[i]->GetName()))
             {
                 abortFill("partner could not join group");
                 return;
@@ -1746,7 +1755,7 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
         // packets sent at login-prep may not have landed yet)
         if (!joinSent)
         {
-            for (int i = 0; i < 2; ++i)
+            for (uint32 i = 0; i < fillCount; ++i)
             {
                 if (!member[i]->InBattleGroundQueue())
                     continue;
@@ -1779,7 +1788,7 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
                 abortFill("no battlemaster in range after teleport");
                 return;
             }
-            uint8 arenaSlot = needType == ARENA_TYPE_2v2 ? 0 : needType == ARENA_TYPE_3v3 ? 1 : 2;
+            uint8 arenaSlot = fillType == ARENA_TYPE_2v2 ? 0 : fillType == ARENA_TYPE_3v3 ? 1 : 2;
             WorldPacket join(CMSG_BATTLEMASTER_JOIN_ARENA, 20);
             join << battlemaster->GetObjectGuid()
                  << arenaSlot << uint8(1) << uint8(1);      // asGroup, isRated
@@ -1790,7 +1799,7 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
         }
 
         // join round-trips through the queue thread; wait for the slot
-        BattleGroundQueueTypeId queueTypeId = BattleGroundMgr::BgQueueTypeId(BATTLEGROUND_AA, needType);
+        BattleGroundQueueTypeId queueTypeId = BattleGroundMgr::BgQueueTypeId(BATTLEGROUND_AA, fillType);
         if (member[0]->GetBattleGroundQueueIndex(queueTypeId) < PLAYER_MAX_BATTLEGROUND_QUEUES)
         {
             stage = FILL_QUEUED;
@@ -1803,15 +1812,17 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
 
     if (stage == FILL_QUEUED)
     {
-        int inBg = 0;
-        for (int i = 0; i < 2; ++i)
+        uint32 inBg = 0;
+        for (uint32 i = 0; i < fillCount; ++i)
             if (member[i]->InBattleGround())
                 ++inBg;
-        if (inBg == 2)
+        if (inBg == fillCount)
         {
             sLog.outBasic("ArenaMatchmaker: team %u ported into the arena — fill complete", fillTeamId);
             stage = FILL_IDLE;
             fillTeamId = 0;
+            fillCount = 0;
+            fillType = ARENA_TYPE_NONE;
             joinSent = false;
             cooldownUntil = now + 60;
             return;
@@ -1819,7 +1830,7 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
 
         if (now < lastPortSend + 10)
             return;
-        for (int i = 0; i < 2; ++i)
+        for (uint32 i = 0; i < fillCount; ++i)
         {
             Player* bot = member[i];
             if (bot->InBattleGround() || bot->IsBeingTeleported())
