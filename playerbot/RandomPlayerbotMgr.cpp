@@ -1439,25 +1439,44 @@ void RandomPlayerbotMgr::AcceptPendingBgInvites()
         return;
     lastSweep = time(nullptr);
 
+    // safety net, not a racer: a healthy bot accepts its own invite within
+    // one AI tick, and sweeping on the same tick as the invite just
+    // double-accepts (harmless but floods the log with "itrplayerstatus
+    // not found"). Only sweep invites still pending on the SECOND sweep
+    // tick that sees them (>=10s old) — those are the genuinely lost ones.
+    static std::map<ObjectGuid, time_t> inviteFirstSeen;
+
     ForEachPlayerbot([&](Player* bot)
     {
-        if (!bot || !bot->IsInWorld() || bot->InBattleGround() || bot->IsBeingTeleported())
+        if (!bot)
             return;
-        for (uint32 slot = 0; slot < PLAYER_MAX_BATTLEGROUND_QUEUES; ++slot)
-        {
-            BattleGroundQueueTypeId queueTypeId = bot->GetBattleGroundQueueTypeId(slot);
-            if (queueTypeId == BATTLEGROUND_QUEUE_NONE ||
-                !bot->IsInvitedForBattleGroundQueueType(queueTypeId))
-                continue;
+        bool invited = false;
+        if (bot->IsInWorld() && !bot->InBattleGround() && !bot->IsBeingTeleported())
+            for (uint32 slot = 0; slot < PLAYER_MAX_BATTLEGROUND_QUEUES; ++slot)
+            {
+                BattleGroundQueueTypeId queueTypeId = bot->GetBattleGroundQueueTypeId(slot);
+                if (queueTypeId == BATTLEGROUND_QUEUE_NONE ||
+                    !bot->IsInvitedForBattleGroundQueueType(queueTypeId))
+                    continue;
+                invited = true;
 
-            WorldPacket packet(CMSG_BATTLEFIELD_PORT, 20);
-            packet << uint8(BattleGroundMgr::BgArenaType(queueTypeId)) << uint8(0)
-                   << uint32(BattleGroundMgr::BgTemplateId(queueTypeId)) << uint16(0) << uint8(1);
-            bot->GetSession()->HandleBattlefieldPortOpcode(packet);
-            sLog.outBasic("RandomPlayerbotMgr: swept pending bg invite for bot %s (queue %u)",
-                          bot->GetName(), uint32(queueTypeId));
-            return;
-        }
+                auto seen = inviteFirstSeen.find(bot->GetObjectGuid());
+                if (seen == inviteFirstSeen.end())
+                {
+                    inviteFirstSeen[bot->GetObjectGuid()] = lastSweep;
+                    return;     // his own AI gets this sweep cycle to act
+                }
+
+                WorldPacket packet(CMSG_BATTLEFIELD_PORT, 20);
+                packet << uint8(BattleGroundMgr::BgArenaType(queueTypeId)) << uint8(0)
+                       << uint32(BattleGroundMgr::BgTemplateId(queueTypeId)) << uint16(0) << uint8(1);
+                bot->GetSession()->HandleBattlefieldPortOpcode(packet);
+                sLog.outBasic("RandomPlayerbotMgr: swept pending bg invite for bot %s (queue %u)",
+                              bot->GetName(), uint32(queueTypeId));
+                return;
+            }
+        if (!invited)
+            inviteFirstSeen.erase(bot->GetObjectGuid());
     });
 }
 
