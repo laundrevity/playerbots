@@ -1434,6 +1434,11 @@ void RandomPlayerbotMgr::LoadBattleMastersCache()
 // the Player, so sweep it and accept directly — no packet required.
 void RandomPlayerbotMgr::AcceptPendingBgInvites()
 {
+#ifdef MANGOSBOT_ZERO
+    return;     // vanilla: CMSG_BATTLEFIELD_PORT has a different layout and
+                // there are no arenas — port the sweep when classic bots
+                // start doing battlegrounds
+#else
     static time_t lastSweep = 0;    // invite window is 120s; 10s is plenty
     if (time(nullptr) < lastSweep + 10)
         return;
@@ -1478,6 +1483,7 @@ void RandomPlayerbotMgr::AcceptPendingBgInvites()
         if (!invited)
             inviteFirstSeen.erase(bot->GetObjectGuid());
     });
+#endif
 }
 
 // Rated arena fill must not wait on distributed AI cadence (observed: a
@@ -1487,6 +1493,9 @@ void RandomPlayerbotMgr::AcceptPendingBgInvites()
 // immediately — same central-sweep philosophy as AcceptPendingBgInvites.
 void RandomPlayerbotMgr::DirectRatedArenaCaptains()
 {
+#ifdef MANGOSBOT_ZERO
+    return;     // vanilla has no rated arenas
+#else
     static time_t lastSweep = 0;
     if (time(nullptr) < lastSweep + 30)
         return;
@@ -1526,6 +1535,7 @@ void RandomPlayerbotMgr::DirectRatedArenaCaptains()
         if (joined)
             directedThisSweep = true;
     });
+#endif
 }
 
 // Deterministic rated-arena matchmaker (wotlk). The organic fill chain
