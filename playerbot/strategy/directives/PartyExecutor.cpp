@@ -940,6 +940,25 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
                     enemies.push_back(candidate);
             }
 
+            // no enemy in sight yet: take the scout position — ahead of the
+            // master along his facing — so the sap approach starts from the
+            // front line instead of from behind his shoulder. By the time
+            // the healer is visible it's usually too late to outrun the pull.
+            if (enemies.empty())
+            {
+                Player* master = ai->GetMaster();
+                if (master && master->IsAlive() && master->GetMapId() == bot->GetMapId())
+                {
+                    float const lead = 22.0f;
+                    float x = master->GetPositionX() + std::cos(master->GetOrientation()) * lead;
+                    float y = master->GetPositionY() + std::sin(master->GetOrientation()) * lead;
+                    if (bot->GetDistance2d(x, y) > 5.0f)
+                        bot->GetMotionMaster()->MovePoint(0, x, y, master->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                    ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+                    return;
+                }
+            }
+
             // the skull mark names the kill target; sap goes on someone else
             Unit* marked = nullptr;
             if (Group* group = bot->GetGroup())
