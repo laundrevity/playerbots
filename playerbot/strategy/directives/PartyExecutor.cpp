@@ -1523,7 +1523,7 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
         return true;
     if (Cast(ai, "sunder armor", target))
         return true;
-    if (bot->GetPower(POWER_RAGE) > 500 && Cast(ai, "heroic strike", target))
+    if (bot->GetPower(POWER_RAGE) > 300 && Cast(ai, "heroic strike", target))
         return true;
     if (meleeCount >= 2 && bot->GetPower(POWER_RAGE) > 400 && Cast(ai, "cleave", target))
         return true;
