@@ -1380,10 +1380,14 @@ bool PartyExecutor::EngageTarget(PlayerbotAI* ai, Player* bot, Unit* target)
         // match). 33yd covers frostbolt/fireball with talent reach.
         if (!bot->IsWithinDistInMap(target, 33.0f) || !bot->IsWithinLOSInMap(target))
             return ai->DoSpecificAction("reach spell", Event(), true);
-        // in range with line of sight: PLANT THE FEET so cast-time spells
-        // pass the movement check
-        if (!bot->IsStopped())
-            bot->StopMoving(true);
+        // in range with line of sight: retire the leftover chase generator
+        // ONCE (a bare StopMoving fights the still-active chase and reads
+        // as running in place), then let the rotation cast from here
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
+        {
+            bot->GetMotionMaster()->Clear(false);
+            ai->StopMoving();
+        }
         return false;
     }
     return false;
