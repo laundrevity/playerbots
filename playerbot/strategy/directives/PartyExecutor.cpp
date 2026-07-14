@@ -10,6 +10,7 @@
 
 #include "playerbot/thirdparty/nlohmann/json.hpp"
 
+#include "BattleGround/BattleGround.h"
 #include "Entities/Bag.h"
 #include "Entities/Pet.h"
 #include "Groups/Group.h"
@@ -143,6 +144,189 @@ namespace
         return ai->HasAura("sap", unit) || ai->HasAura("blind", unit) ||
                ai->HasAura("gouge", unit) || ai->HasAura("polymorph", unit) ||
                unit->HasAuraType(SPELL_AURA_MOD_FEAR);
+    }
+
+    // ---- diminishing returns ledger (arena, observation-based) ----
+    // Same-category CC runs full -> 1/2 -> 1/4 -> immune, resetting ~15s
+    // after the last aura of the category fades. The module can't hook aura
+    // events, so combat ticks OBSERVE each enemy once per second: a rising
+    // edge counts an application, a falling edge stamps the fade.
+    enum DrCategory { DR_STUN = 0, DR_INCAP, DR_FEAR, DR_BLIND, DR_POLY, DR_CATEGORY_COUNT };
+
+    static const char* const DR_AURAS_STUN[]  = { "cheap shot", "kidney shot", "hammer of justice", "intercept", "concussion blow", nullptr };
+    static const char* const DR_AURAS_INCAP[] = { "sap", "gouge", nullptr };
+    static const char* const DR_AURAS_FEAR[]  = { "fear", "psychic scream", "howl of terror", "intimidating shout", nullptr };
+    static const char* const DR_AURAS_BLIND[] = { "blind", nullptr };
+    static const char* const DR_AURAS_POLY[]  = { "polymorph", nullptr };
+    static const char* const* const DR_AURAS[DR_CATEGORY_COUNT] =
+        { DR_AURAS_STUN, DR_AURAS_INCAP, DR_AURAS_FEAR, DR_AURAS_BLIND, DR_AURAS_POLY };
+
+    struct DrVictimState
+    {
+        uint8 count[DR_CATEGORY_COUNT] = {};
+        bool up[DR_CATEGORY_COUNT] = {};
+        time_t fade[DR_CATEGORY_COUNT] = {};
+        time_t observed = 0;
+    };
+    std::map<ObjectGuid, DrVictimState> s_drStates;
+
+    void DrObserve(PlayerbotAI* ai, Unit* victim)
+    {
+        time_t now = time(nullptr);
+        DrVictimState& st = s_drStates[victim->GetObjectGuid()];
+        if (st.observed == now)
+            return;                     // one observer per victim per second
+        st.observed = now;
+        for (int c = 0; c < DR_CATEGORY_COUNT; ++c)
+        {
+            bool up = false;
+            for (const char* const* name = DR_AURAS[c]; *name; ++name)
+                if (ai->HasAura(*name, victim))
+                {
+                    up = true;
+                    break;
+                }
+            if (up && !st.up[c] && st.count[c] < 3)
+                ++st.count[c];
+            else if (!up && st.up[c])
+                st.fade[c] = now;
+            st.up[c] = up;
+            if (!up && st.count[c] && now > st.fade[c] + 16)
+                st.count[c] = 0;        // bracket reset after the fade window
+        }
+        if (s_drStates.size() > 128)    // hygiene: forget long-gone victims
+            for (auto itr = s_drStates.begin(); itr != s_drStates.end();)
+                if (itr->second.observed + 300 < now)
+                    itr = s_drStates.erase(itr);
+                else
+                    ++itr;
+    }
+
+    uint8 DrLevel(Unit* victim, DrCategory cat)
+    {
+        auto itr = s_drStates.find(victim->GetObjectGuid());
+        if (itr == s_drStates.end())
+            return 0;
+        DrVictimState& st = itr->second;
+        if (!st.up[cat] && st.count[cat] && time(nullptr) > st.fade[cat] + 16)
+            st.count[cat] = 0;
+        return st.count[cat];
+    }
+
+    // ---- arena director: one shared kill target per team per fight ----
+    // Per-bot nearest-target drift is why the team looks headless: everyone
+    // picks his own victim. The director keeps a single plan per (arena
+    // instance, side): squishiest dps first, healers only when nothing else
+    // stands, and a transient off-target while the main sits in our own CC.
+    int ArenaKillPriority(Player* enemy)
+    {
+        if (PlayerbotAI::IsHeal(enemy))
+            return 100;
+        switch (enemy->getClass())
+        {
+            case CLASS_MAGE:    return 0;
+            case CLASS_WARLOCK: return 1;
+            case CLASS_HUNTER:  return 2;
+            case CLASS_PRIEST:  return 3;
+            case CLASS_ROGUE:   return 4;
+            case CLASS_DRUID:   return 5;
+            case CLASS_SHAMAN:  return 6;
+            case CLASS_PALADIN: return 7;
+            case CLASS_WARRIOR: return 8;
+        }
+        return 50;
+    }
+
+    struct ArenaPlan
+    {
+        ObjectGuid killTarget;
+        time_t lastSeen = 0;
+    };
+    std::map<uint64, ArenaPlan> s_arenaPlans;
+
+    Unit* ArenaDirectorTarget(PlayerbotAI* ai, Player* bot)
+    {
+        BattleGround* bg = bot->GetBattleGround();
+        if (!bg || !bg->IsArena())
+            return nullptr;
+        Team side = bg->GetPlayerTeam(bot->GetObjectGuid());
+        if (side == TEAM_NONE)
+            return nullptr;
+        time_t now = time(nullptr);
+        uint64 key = (uint64(bg->GetInstanceId()) << 1) | (side == HORDE ? 1 : 0);
+        ArenaPlan& plan = s_arenaPlans[key];
+        plan.lastSeen = now;
+        if (s_arenaPlans.size() > 32)
+            for (auto itr = s_arenaPlans.begin(); itr != s_arenaPlans.end();)
+                if (itr->second.lastSeen + 600 < now)
+                    itr = s_arenaPlans.erase(itr);
+                else
+                    ++itr;
+
+        Unit* current = plan.killTarget ? ai->GetUnit(plan.killTarget) : nullptr;
+        if (current && (!current->IsAlive() || !current->IsInWorld()))
+            current = nullptr;
+
+        if (!current)
+        {
+            AiObjectContext* context = ai->GetAiObjectContext();
+            std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+            int best = 1000;
+            for (const ObjectGuid& guid : possible)
+            {
+                Unit* candidate = ai->GetUnit(guid);
+                if (!candidate || !candidate->IsPlayer() || !candidate->IsAlive())
+                    continue;
+                int priority = ArenaKillPriority((Player*)candidate);
+                if (priority < best)
+                {
+                    best = priority;
+                    current = candidate;
+                }
+            }
+            plan.killTarget = current ? current->GetObjectGuid() : ObjectGuid();
+        }
+
+        // main target parked in our own breakable CC: swap transiently to
+        // the best free enemy; the plan snaps back when the CC fades
+        if (current && IsSoftCrowdControlled(ai, current))
+        {
+            AiObjectContext* context = ai->GetAiObjectContext();
+            std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+            Unit* fallback = nullptr;
+            int best = 1000;
+            for (const ObjectGuid& guid : possible)
+            {
+                Unit* candidate = ai->GetUnit(guid);
+                if (!candidate || !candidate->IsPlayer() || !candidate->IsAlive() ||
+                    candidate == current || IsSoftCrowdControlled(ai, candidate))
+                    continue;
+                int priority = ArenaKillPriority((Player*)candidate);
+                if (priority < best)
+                {
+                    best = priority;
+                    fallback = candidate;
+                }
+            }
+            if (fallback)
+                return fallback;
+        }
+        return current;
+    }
+
+    // burst window: the kill target is stunned in range, or the enemy healer
+    // is locked out — the seconds cooldowns exist for
+    bool ArenaBurstWindow(PlayerbotAI* ai, Player* bot, Unit* target)
+    {
+        if (!target || !bot->InArena())
+            return false;
+        if (target->HasAuraType(SPELL_AURA_MOD_STUN) && target->GetHealthPercent() < 75.0f)
+            return true;
+        if (Unit* healer = NearestEnemyHealer(ai, bot))
+            if (healer != target &&
+                (healer->HasAuraType(SPELL_AURA_MOD_STUN) || IsSoftCrowdControlled(ai, healer)))
+                return true;
+        return false;
     }
 
     // ---- tank routes (encounters/party_routes.json, installed to etc/) ----
@@ -763,15 +947,21 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
                     if (skull->IsAlive())
                         marked = skull;
 
-            // sap target: never worth stalking a lone survivor for
+            // sap target: never worth stalking a lone survivor — but a lone
+            // VISIBLE healer with unseen (stealthed) teammates still exists
+            // per the bracket size, and sapping him is the mirror-matchup play
+            uint32 bracketSize = 0;
+            if (BattleGround* bg = bot->GetBattleGround())
+                bracketSize = uint32(bg->GetArenaType());
             bool knowsSap = bot->HasSpell(6770) || bot->HasSpell(2070) || bot->HasSpell(11297);
             Unit* sapTarget = nullptr;
-            if (enemies.size() >= 2 && knowsSap)
+            if (knowsSap && (enemies.size() >= 2 ||
+                             (!enemies.empty() && bracketSize > enemies.size())))
             {
                 Unit* healer = NearestEnemyHealer(ai, bot);
                 if (healer && healer != marked)
                     sapTarget = healer;
-                else if (!healer)
+                else if (!healer && enemies.size() >= 2)
                 {
                     // double dps: sap the one the team reaches last
                     float farthest = 0.0f;
@@ -1048,6 +1238,12 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
     if (Unit* directed = GetDirectiveKillTarget(ai, context))
         return directed;
 
+    // 3b'. arena: the director's shared kill target — the whole side plays
+    // one plan instead of per-bot nearest-enemy drift
+    if (bot->InArena())
+        if (Unit* called = ArenaDirectorTarget(ai, bot))
+            return called;
+
     // 3c. role default
     if (PlayerbotAI::IsTank(bot))
     {
@@ -1312,7 +1508,7 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
         return true;   // white swings only until the tank pulls ahead
     }
 
-    if (BurnPolicy(ai))
+    if (BurnPolicy(ai) || ArenaBurstWindow(ai, bot, target))
     {
         if (Cast(ai, "adrenaline rush", bot))
             return true;
@@ -1354,7 +1550,8 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
                 if (target->GetHealthPercent() < 50.0f &&
                     !healer->HasAuraType(SPELL_AURA_MOD_STUN) &&
                     !healer->HasAuraType(SPELL_AURA_MOD_CONFUSE) &&
-                    !IsSoftCrowdControlled(ai, healer) && Cast(ai, "blind", healer))
+                    !IsSoftCrowdControlled(ai, healer) &&
+                    DrLevel(healer, DR_BLIND) < 2 && Cast(ai, "blind", healer))
                     return true;
             }
         }
@@ -1391,7 +1588,7 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
         {
             Unit* sapTarget = NearestEnemyHealer(ai, bot);
             if (sapTarget && sapTarget != target && !sapTarget->IsInCombat() &&
-                !ai->HasAura("sap", sapTarget))
+                !ai->HasAura("sap", sapTarget) && DrLevel(sapTarget, DR_INCAP) < 2)
             {
                 if (bot->CanReachWithMeleeAttack(sapTarget))
                 {
@@ -1424,9 +1621,20 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
             !ai->CanCastSpell("kick", target, 0) && Cast(ai, "gouge", target))
             return true;
 
-        // stunlock: kidney at 3+ unless they're already stunned (DR waste)
-        if (combo >= 3 && !target->HasAuraType(SPELL_AURA_MOD_STUN) && Cast(ai, "kidney shot", target))
-            return true;
+        // stunlock with DR sense: kidney at 3+ unless the stun bracket is
+        // spent or they're already stunned; pool to ~55 energy first so the
+        // stun window opens with a loaded bar instead of an empty one
+        if (combo >= 3 && !target->HasAuraType(SPELL_AURA_MOD_STUN) &&
+            DrLevel(target, DR_STUN) < 2)
+        {
+            if (bot->GetPower(POWER_ENERGY) < 55 && target->GetHealthPercent() > 40.0f)
+            {
+                ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+                return true;    // white swings while energy pools
+            }
+            if (Cast(ai, "kidney shot", target))
+                return true;
+        }
         if (combo >= 5 && Cast(ai, "eviscerate", target))
             return true;
         // stay glued to the kill target
@@ -1940,6 +2148,17 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     // arena: the shot-caller watches the fight and calls plays unprompted
     // (edge-triggered + rate-limited inside; snapshot only, never blocks)
     sShotCaller.ArenaTick(ai, bot);
+
+    // arena: keep the DR ledger current (one observation per enemy per
+    // second, whichever bot's tick gets there first)
+    if (bot->InArena())
+    {
+        std::list<ObjectGuid> drGuids = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+        for (const ObjectGuid& guid : drGuids)
+            if (Unit* enemy = ai->GetUnit(guid))
+                if (enemy->IsPlayer() && enemy->IsAlive())
+                    DrObserve(ai, enemy);
+    }
 
     // mid-cast: let the cast land instead of walking through it
     if (bot->IsNonMeleeSpellCasted(false, true, true))
