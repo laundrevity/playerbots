@@ -246,6 +246,9 @@ namespace
 
     Unit* ArenaDirectorTarget(PlayerbotAI* ai, Player* bot)
     {
+#ifdef MANGOSBOT_ZERO
+        return nullptr;     // vanilla has no arenas
+#else
         BattleGround* bg = bot->GetBattleGround();
         if (!bg || !bg->IsArena())
             return nullptr;
@@ -312,6 +315,7 @@ namespace
                 return fallback;
         }
         return current;
+#endif
     }
 
     // burst window: the kill target is stunned in range, or the enemy healer
@@ -970,8 +974,10 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
             // VISIBLE healer with unseen (stealthed) teammates still exists
             // per the bracket size, and sapping him is the mirror-matchup play
             uint32 bracketSize = 0;
+#ifndef MANGOSBOT_ZERO
             if (BattleGround* bg = bot->GetBattleGround())
                 bracketSize = uint32(bg->GetArenaType());
+#endif
             bool knowsSap = bot->HasSpell(6770) || bot->HasSpell(2070) || bot->HasSpell(11297);
             Unit* sapTarget = nullptr;
             if (knowsSap && (enemies.size() >= 2 ||
@@ -1449,12 +1455,19 @@ bool PartyExecutor::ThreatCapped(PlayerbotAI* ai, Player* bot, Unit* target)
 {
     if (PlayerbotAI::IsTank(bot))
         return false;
+    if (target->GetHealthPercent() < 20.0f)
+        return false;   // execute window: it dies before threat matters
     Unit* tank = target->GetVictim();
     if (!tank || tank == bot || !tank->IsPlayer() || !PlayerbotAI::IsTank((Player*)tank))
         return false;   // nobody tanking it: no ceiling to respect
     float mine = target->getThreatManager().getThreat(bot);
     float tanks = target->getThreatManager().getThreat(tank);
-    return tanks > 0.0f && mine > THREAT_CEILING * tanks;
+    // classic aggro rule: mobs turn at 110% of current-target threat for
+    // melee, 130% for ranged — the ranged budget is much bigger than the
+    // melee one, and 0.9 for everyone idled well-geared casters (observed:
+    // Naxx-BiS mages parked after two frostbolts behind a green-geared tank)
+    float ceiling = ai->IsRanged(bot) ? 1.2f : THREAT_CEILING;
+    return tanks > 0.0f && mine > ceiling * tanks;
 }
 
 // melee dps belong behind the target (when someone else is tanking it)
@@ -1691,6 +1704,9 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
     // NB: no Polymorph here, ever — cc happens only via directive assignment
     if (ThreatCapped(ai, bot, target))
     {
+        // wand while parked: negligible threat, real vanilla damage
+        if (Cast(ai, "shoot", target))
+            return true;
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
         return true;   // stop casting until the tank pulls ahead
     }
@@ -1859,6 +1875,9 @@ bool PartyExecutor::WarlockTick(PlayerbotAI* ai, Player* bot, Unit* target)
 {
     if (ThreatCapped(ai, bot, target))
     {
+        // wand while parked: negligible threat, real vanilla damage
+        if (Cast(ai, "shoot", target))
+            return true;
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
         return true;
     }
