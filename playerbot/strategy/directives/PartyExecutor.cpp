@@ -789,6 +789,25 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
                 }
             }
 
+            // opener diagnostics: one line every ~2s while stealthed in arena
+            {
+                static std::map<ObjectGuid, time_t> lastDiag;
+                time_t nowDiag = time(nullptr);
+                time_t& stamp = lastDiag[bot->GetObjectGuid()];
+                if (nowDiag >= stamp + 2)
+                {
+                    stamp = nowDiag;
+                    Unit* healerDiag = NearestEnemyHealer(ai, bot);
+                    sLog.outBasic("RogueOpener: %s enemies=%zu knowsSap=%d healer=%s marked=%s sapTarget=%s%s openFallbackReady=%d",
+                                  bot->GetName(), enemies.size(), knowsSap ? 1 : 0,
+                                  healerDiag ? healerDiag->GetName() : "-",
+                                  marked ? marked->GetName() : "-",
+                                  sapTarget ? sapTarget->GetName() : "-",
+                                  (sapTarget && sapTarget->IsInCombat()) ? "(in combat!)" : "",
+                                  bot->IsInCombat() ? 0 : 1);
+                }
+            }
+
             // phase 1: deliver the sap (done once it lands or combat finds him)
             if (sapTarget && !ai->HasAura("sap", sapTarget) && !sapTarget->IsInCombat())
             {
@@ -799,6 +818,12 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
                 }
                 else
                 {
+                    // sprint-sap: stealth walk is 30% slow and the window
+                    // closes when the teams collide — burn sprint to get
+                    // there first (TBC sprint neither breaks stealth nor
+                    // starts combat)
+                    if (sServerFacade.GetDistance2d(bot, sapTarget) > 15.0f)
+                        Cast(ai, "sprint", bot);
                     bot->GetMotionMaster()->MovePoint(0, sapTarget->GetPositionX(), sapTarget->GetPositionY(),
                                                       sapTarget->GetPositionZ(), FORCED_MOVEMENT_RUN);
                     ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
@@ -1354,6 +1379,33 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
                         continue;
                     if (bot->CanReachWithMeleeAttack(menace) && Cast(ai, "gouge", menace))
                         return true;
+                }
+            }
+        }
+
+        // still stealthed although combat already found the team: the sap
+        // window stays open as long as the TARGET is out of combat (sap
+        // needs a stealthed rogue, not a peaceful one). Land it on the
+        // trailing healer before joining the fight — within reason (30yd).
+        if (ai->HasAura("stealth", bot))
+        {
+            Unit* sapTarget = NearestEnemyHealer(ai, bot);
+            if (sapTarget && sapTarget != target && !sapTarget->IsInCombat() &&
+                !ai->HasAura("sap", sapTarget))
+            {
+                if (bot->CanReachWithMeleeAttack(sapTarget))
+                {
+                    if (Cast(ai, "sap", sapTarget))
+                        return true;
+                }
+                else if (sServerFacade.GetDistance2d(bot, sapTarget) < 30.0f)
+                {
+                    if (sServerFacade.GetDistance2d(bot, sapTarget) > 15.0f)
+                        Cast(ai, "sprint", bot);
+                    bot->GetMotionMaster()->MovePoint(0, sapTarget->GetPositionX(), sapTarget->GetPositionY(),
+                                                      sapTarget->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                    ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+                    return true;
                 }
             }
         }
