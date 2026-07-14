@@ -1372,8 +1372,20 @@ bool PartyExecutor::EngageTarget(PlayerbotAI* ai, Player* bot, Unit* target)
 
     if (!ranged && !bot->CanReachWithMeleeAttack(target))
         return ai->DoSpecificAction("reach melee", Event(), true);
-    if (ranged && !bot->IsWithinDistInMap(target, 25.0f))
-        return ai->DoSpecificAction("reach spell", Event(), true);
+    if (ranged)
+    {
+        // casters cast from max range: chasing to a tight leash keeps the
+        // bot permanently moving, and a moving caster can only use instants
+        // (observed: arena mage reduced to fire blast + wand for the whole
+        // match). 33yd covers frostbolt/fireball with talent reach.
+        if (!bot->IsWithinDistInMap(target, 33.0f) || !bot->IsWithinLOSInMap(target))
+            return ai->DoSpecificAction("reach spell", Event(), true);
+        // in range with line of sight: PLANT THE FEET so cast-time spells
+        // pass the movement check
+        if (!bot->IsStopped())
+            bot->StopMoving(true);
+        return false;
+    }
     return false;
 }
 
