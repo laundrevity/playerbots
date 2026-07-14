@@ -1717,7 +1717,8 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
 
 bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
 {
-    // NB: no Polymorph here, ever — cc happens only via directive assignment
+    // NB: no Polymorph vs MOBS, ever — pve cc happens only via directive
+    // assignment. Arena players are fair game below.
     if (ThreatCapped(ai, bot, target))
     {
         // wand while parked: negligible threat, real vanilla damage
@@ -1725,6 +1726,53 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
             return true;
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
         return true;   // stop casting until the tank pulls ahead
+    }
+
+    if (target->IsPlayer() && bot->InArena())
+    {
+        // sheep the off-target: the enemy we are NOT killing sits in a
+        // sheep — unless he's already controlled, his poly DR is spent,
+        // dots would break it instantly, or the kill target is in execute
+        // range (no cc during the kill, just kill)
+        if (target->GetHealthPercent() > 25.0f)
+        {
+            AiObjectContext* context = ai->GetAiObjectContext();
+            std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+            for (const ObjectGuid& guid : possible)
+            {
+                Unit* off = ai->GetUnit(guid);
+                if (!off || !off->IsPlayer() || !off->IsAlive() || off == target)
+                    continue;
+                if (IsSoftCrowdControlled(ai, off) || off->HasAuraType(SPELL_AURA_MOD_STUN) ||
+                    off->HasAuraType(SPELL_AURA_PERIODIC_DAMAGE) || DrLevel(off, DR_POLY) >= 2)
+                    continue;
+                if (Cast(ai, "polymorph", off))
+                    return true;
+                break;  // one candidate per tick is enough
+            }
+        }
+
+        // shatter setup: nova the kill target at point blank — but never
+        // when it would shatter the team's OWN cc (sheep/sap/blind/fear
+        // on anyone inside nova radius)
+        if (bot->IsWithinDistInMap(target, 11.0f) && !target->HasAuraType(SPELL_AURA_MOD_ROOT))
+        {
+            bool ccInRadius = false;
+            AiObjectContext* context = ai->GetAiObjectContext();
+            std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+            for (const ObjectGuid& guid : possible)
+            {
+                Unit* nearby = ai->GetUnit(guid);
+                if (nearby && nearby->IsPlayer() && nearby->IsAlive() &&
+                    bot->IsWithinDistInMap(nearby, 12.0f) && IsSoftCrowdControlled(ai, nearby))
+                {
+                    ccInRadius = true;
+                    break;
+                }
+            }
+            if (!ccInRadius && Cast(ai, "frost nova", bot))
+                return true;
+        }
     }
 
     // spec by talent tab (legible sensor): 0 = arcane, 1 = fire, 2 = frost
@@ -1762,6 +1810,10 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
             return true;
     }
 
+    // frozen target: ice lance shatters, and it works on the move — the
+    // instant follow-up when frostbolt can't be channeled
+    if (target->HasAuraType(SPELL_AURA_MOD_ROOT) && Cast(ai, "ice lance", target))
+        return true;
     if (Cast(ai, "fire blast", target))
         return true;
     if (Cast(ai, "shoot", target))
