@@ -1186,6 +1186,52 @@ bool PartyExecutor::KeepCcApplied(PlayerbotAI* ai, Player* bot)
     return false;
 }
 
+// elemental shaman: flame shock rolls, lava burst on cooldown (guaranteed
+// crit on a shocked target), lightning bolt filler. Non-healing shamans of
+// any spec run this — a wrong-spec bot beats a statue.
+bool PartyExecutor::EleShamanTick(PlayerbotAI* ai, Player* bot, Unit* target)
+{
+    if (ThreatCapped(ai, bot, target))
+    {
+        ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+        return true;
+    }
+
+    if ((BurnPolicy(ai) || ArenaBurstWindow(ai, bot, target)) && Cast(ai, "elemental mastery", bot))
+        return true;
+
+    if (!ai->HasAura("flame shock", target, false, true) && Cast(ai, "flame shock", target))
+        return true;
+    if (Cast(ai, "lava burst", target))
+        return true;
+    if (Cast(ai, "lightning bolt", target))
+        return true;
+    return false;
+}
+
+// balance druid: dots up, wrath filler. Also the safety net for any
+// non-healing druid spec so nobody idles in the dispatch void again.
+bool PartyExecutor::BalanceDruidTick(PlayerbotAI* ai, Player* bot, Unit* target)
+{
+    if (ThreatCapped(ai, bot, target))
+    {
+        ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+        return true;
+    }
+
+    if (!ai->HasAura("moonkin form", bot) && Cast(ai, "moonkin form", bot))
+        return true;
+    if (!ai->HasAura("moonfire", target, false, true) && Cast(ai, "moonfire", target))
+        return true;
+    if (!ai->HasAura("insect swarm", target, false, true) && Cast(ai, "insect swarm", target))
+        return true;
+    if (Cast(ai, "starfire", target))
+        return true;
+    if (Cast(ai, "wrath", target))
+        return true;
+    return false;
+}
+
 bool PartyExecutor::TryInterrupt(PlayerbotAI* ai, Player* bot, Unit* target)
 {
     if (!target || !target->IsNonMeleeSpellCasted(false, true, true))
@@ -1196,7 +1242,11 @@ bool PartyExecutor::TryInterrupt(PlayerbotAI* ai, Player* bot, Unit* target)
         case CLASS_ROGUE:   return Cast(ai, "kick", target);
         case CLASS_MAGE:    return Cast(ai, "counterspell", target);
         case CLASS_WARRIOR: return Cast(ai, "shield bash", target);
+#ifdef MANGOSBOT_TWO
+        case CLASS_SHAMAN:  return Cast(ai, "wind shear", target);   // earth shock stopped interrupting in 3.0
+#else
         case CLASS_SHAMAN:  return Cast(ai, "earth shock", target);
+#endif
         default:            return false;
     }
 }
@@ -2114,6 +2164,31 @@ bool PartyExecutor::HealerTriageTick(PlayerbotAI* ai, Player* bot)
                 return true;
             break;
         case CLASS_DRUID:
+#ifdef MANGOSBOT_TWO
+            // wotlk: Tree of Life form locks out healing touch/regrowth-era
+            // direct heals — the tree toolkit is swiftmend/nourish/lifebloom
+            if (lowestPct < 35.0f)
+            {
+                if (Cast(ai, "swiftmend", lowest))
+                    return true;
+                if (Cast(ai, "nourish", lowest))
+                    return true;
+            }
+            if (lowestPct < 60.0f)
+            {
+                if (!ai->HasAura("rejuvenation", lowest) && Cast(ai, "rejuvenation", lowest))
+                    return true;
+                if (Cast(ai, "nourish", lowest))
+                    return true;
+            }
+            if (lowestPct < 85.0f)
+            {
+                if (!ai->HasAura("rejuvenation", lowest) && Cast(ai, "rejuvenation", lowest))
+                    return true;
+                if (!ai->HasAura("lifebloom", lowest) && Cast(ai, "lifebloom", lowest))
+                    return true;
+            }
+#else
             if (lowestPct < 35.0f)
             {
                 if (Cast(ai, "nature's swiftness", bot))
@@ -2130,6 +2205,7 @@ bool PartyExecutor::HealerTriageTick(PlayerbotAI* ai, Player* bot)
             }
             if (lowestPct < 85.0f && !ai->HasAura("rejuvenation", lowest) && Cast(ai, "rejuvenation", lowest))
                 return true;
+#endif
             break;
         default:
             break;
@@ -2314,6 +2390,8 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
                                                             : RetPaladinTick(ai, bot, target); break;
         case CLASS_WARLOCK: acted = WarlockTick(ai, bot, target); break;
         case CLASS_PRIEST:  acted = ShadowPriestTick(ai, bot, target); break;
+        case CLASS_SHAMAN:  acted = EleShamanTick(ai, bot, target); break;
+        case CLASS_DRUID:   acted = BalanceDruidTick(ai, bot, target); break;
         default:            acted = false; break;
     }
 

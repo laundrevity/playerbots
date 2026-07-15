@@ -70,6 +70,8 @@ namespace ai
         static bool RogueTick(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool MageTick(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool RetPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target);
+        static bool EleShamanTick(PlayerbotAI* ai, Player* bot, Unit* target);
+        static bool BalanceDruidTick(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool WarlockTick(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool ShadowPriestTick(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool RestoShamanTick(PlayerbotAI* ai, Player* bot);
