@@ -1194,7 +1194,11 @@ namespace
         // low search level yields candidate pools entirely below the 115 floor - every
         // pick gets filtered and the bot keeps its old gear.
         PlayerbotFactory factory(bot, bot->GetLevel(), ITEM_QUALITY_EPIC);
+#ifdef MANGOSBOT_TWO
+        factory.SetMinItemLevel(200);   // wotlk ladder floor: naxx/S5-era epics
+#else
         factory.SetMinItemLevel(115);
+#endif
         factory.EquipArenaGear();
 
         // replace trinket 1 with the faction pvp medallion so "use pvp trinket" can break cc
@@ -1564,3 +1568,8 @@ std::string RandomPlayerbotFactory::CreateRandomArenaTeamName()
 }
 #endif
 
+
+void RandomPlayerbotFactory::GearArenaTeamMember(Player* bot)
+{
+    GearArenaBot(bot);
+}

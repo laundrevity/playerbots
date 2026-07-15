@@ -65,6 +65,9 @@ class RandomPlayerbotFactory
 	public:
         bool CreateRandomBot(uint8 cls, uint8 inputRace = 0);
         static void CreateRandomBots();
+        // gear an online arena-team bot to the ladder floor (epic + pvp
+        // medallion) and persist immediately — callable from the matchmaker
+        static void GearArenaTeamMember(Player* bot);
         static void CreateRandomGuilds();
         static void CreateRandomArenaTeams();
         static std::string CreateRandomGuildName();

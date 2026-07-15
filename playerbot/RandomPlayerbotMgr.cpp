@@ -10,6 +10,7 @@
 #include "PlayerbotAI.h"
 #include "Entities/Player.h"
 #include "playerbot/AiFactory.h"
+#include "playerbot/RandomPlayerbotFactory.h"
 #include "PlayerbotCommandServer.h"
 #include "MemoryMonitor.h"
 
@@ -1699,6 +1700,24 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
         }
         if (!allOnline)
             return;
+
+        // naked opponents are free wins: this core never geared its ladder
+        // teams (observed: 2-5 equipped items on 2v2 bots). Gear any member
+        // below the floor once, here where they're guaranteed online —
+        // GearArenaTeamMember saves to DB immediately.
+        for (uint32 i = 0; i < fillCount; ++i)
+        {
+            uint32 equipped = 0;
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+                if (member[i]->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                    ++equipped;
+            if (equipped < 12)
+            {
+                sLog.outBasic("ArenaMatchmaker: gearing naked team member %s (%u equipped)",
+                              member[i]->GetName(), equipped);
+                RandomPlayerbotFactory::GearArenaTeamMember(member[i]);
+            }
+        }
 
         // one-shot prep: clear stale state and ship everyone to the battlemaster
         BmSpawn const& bm = member[0]->GetTeam() == ALLIANCE ? bmAlliance : bmHorde;
