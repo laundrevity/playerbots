@@ -4196,6 +4196,28 @@ void RandomPlayerbotMgr::OnPlayerLogout(Player* player)
 void RandomPlayerbotMgr::OnBotLoginInternal(Player * const bot)
 {
     sLog.outDetail("%u/%d Bot %s logged in", GetPlayerbotsAmount(), sRandomPlayerbotMgr.GetMaxAllowedBotCount(), bot->GetName());
+
+#ifdef MANGOSBOT_TWO
+    // the ladder self-heals: any rated-team random bot logging in naked
+    // gets the gear floor. Login is the one choke point every queue path
+    // shares — organic captain joins skip the matchmaker's fill check.
+    if (IsRandomBot(bot->GetGUIDLow()))
+        for (uint8 slot = 0; slot < MAX_ARENA_SLOT; ++slot)
+            if (bot->GetArenaTeamId(slot))
+            {
+                uint32 equipped = 0;
+                for (uint8 s = EQUIPMENT_SLOT_START; s < EQUIPMENT_SLOT_END; ++s)
+                    if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, s))
+                        ++equipped;
+                if (equipped < 12)
+                {
+                    sLog.outBasic("RandomPlayerbotMgr: gearing naked arena member %s at login (%u equipped)",
+                                  bot->GetName(), equipped);
+                    RandomPlayerbotFactory::GearArenaTeamMember(bot);
+                }
+                break;
+            }
+#endif
 	//if (loginProgressBar && playerBots.size() < sRandomPlayerbotMgr.GetMaxAllowedBotCount()) { loginProgressBar->step(); }
 	//if (loginProgressBar && playerBots.size() >= sRandomPlayerbotMgr.GetMaxAllowedBotCount() - 1) {
     //if (loginProgressBar && playerBots.size() + 1 >= sRandomPlayerbotMgr.GetMaxAllowedBotCount()) {
