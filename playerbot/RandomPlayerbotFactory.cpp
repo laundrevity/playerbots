@@ -1194,9 +1194,12 @@ namespace
         // low search level yields candidate pools entirely below the 115 floor - every
         // pick gets filtered and the bot keeps its old gear.
         PlayerbotFactory factory(bot, bot->GetLevel(), ITEM_QUALITY_EPIC);
-#ifdef MANGOSBOT_TWO
-        factory.SetMinItemLevel(200);   // wotlk ladder floor: naxx/S5-era epics
-#else
+#ifndef MANGOSBOT_TWO
+        // TBC-only floor: keeps old-world epics out of the level-70 pool.
+        // On wotlk the required-level filter already excludes lower-
+        // expansion gear at 80, and ANY explicit floor here empties the
+        // cache's candidate pools (observed: every geared slot stripped,
+        // bots left at 2 items) — the floorless path averages ilvl 218+.
         factory.SetMinItemLevel(115);
 #endif
         factory.EquipArenaGear();
