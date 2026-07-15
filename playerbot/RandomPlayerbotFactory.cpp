@@ -1193,6 +1193,10 @@ namespace
         // EquipGearBest, not EquipGear: EquipGear honors RandomGearProgression, whose
         // low search level yields candidate pools entirely below the 115 floor - every
         // pick gets filtered and the bot keeps its old gear.
+        // diagnostics: gearing silently no-ops when the spec is unresolvable
+        sLog.outBasic("GearArenaBot: %s level=%u specId=%u",
+                      bot->GetName(), bot->GetLevel(), sRandomItemMgr.GetPlayerSpecId(bot));
+
         PlayerbotFactory factory(bot, bot->GetLevel(), ITEM_QUALITY_EPIC);
 #ifndef MANGOSBOT_TWO
         // TBC-only floor: keeps old-world epics out of the level-70 pool.
