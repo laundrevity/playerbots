@@ -110,6 +110,22 @@ namespace
         return nullptr;
     }
 
+    // healer by TALENTS, not by the old engine's strategy list: arena
+    // strategy swaps strip the heal strategy and IsHeal() then misroutes
+    // resto bots into dps ticks (observed: resto druid statue in tree form)
+    bool IsHealerSpec(Player* bot)
+    {
+        int tab = AiFactory::GetPlayerSpecTab(bot);
+        switch (bot->getClass())
+        {
+            case CLASS_PRIEST:  return tab == 0 || tab == 1;   // disc / holy
+            case CLASS_PALADIN: return tab == 0;               // holy
+            case CLASS_SHAMAN:  return tab == 2;               // resto
+            case CLASS_DRUID:   return tab == 2;               // resto
+        }
+        return false;
+    }
+
     // nearest enemy player classified healer by his talents (works for
     // opponents: role detection reads the player's own spec)
     Unit* NearestEnemyHealer(PlayerbotAI* ai, Player* bot)
@@ -123,7 +139,7 @@ namespace
             Unit* candidate = ai->GetUnit(guid);
             if (!candidate || !candidate->IsPlayer() || !candidate->IsAlive())
                 continue;
-            if (!PlayerbotAI::IsHeal((Player*)candidate))
+            if (!IsHealerSpec((Player*)candidate))
                 continue;
             float distance = sServerFacade.GetDistance2d(bot, candidate);
             if (distance < bestDistance)
@@ -1090,7 +1106,7 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         // healers advance WITH the team, not at the enemy: shadow the
         // nearest living dps partner (12yd leash); solo-survivor healers
         // fall through to the enemy-convergence path below
-        if (PlayerbotAI::IsHeal(bot))
+        if (IsHealerSpec(bot))
             if (Group* arenaGroup = bot->GetGroup())
             {
                 Player* escort = nullptr;
@@ -1099,7 +1115,7 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
                 {
                     Player* member = itr->getSource();
                     if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() ||
-                        PlayerbotAI::IsHeal(member))
+                        IsHealerSpec(member))
                         continue;
                     float distance = sServerFacade.GetDistance2d(bot, member);
                     if (distance < escortDistance)
@@ -1427,8 +1443,11 @@ bool PartyExecutor::EngageTarget(PlayerbotAI* ai, Player* bot, Unit* target)
         // casters cast from max range: chasing to a tight leash keeps the
         // bot permanently moving, and a moving caster can only use instants
         // (observed: arena mage reduced to fire blast + wand for the whole
-        // match). 33yd covers frostbolt/fireball with talent reach.
-        if (!bot->IsWithinDistInMap(target, 33.0f) || !bot->IsWithinLOSInMap(target))
+        // match). 33yd covers frostbolt/fireball with talent reach — but
+        // shamans live at shock range (25yd), so they plant closer or the
+        // flame shock/lava burst half of the kit never fires.
+        float leash = bot->getClass() == CLASS_SHAMAN ? 24.0f : 33.0f;
+        if (!bot->IsWithinDistInMap(target, leash) || !bot->IsWithinLOSInMap(target))
             return ai->DoSpecificAction("reach spell", Event(), true);
         // in range with line of sight: retire the leftover chase generator
         // ONCE (a bare StopMoving fights the still-active chase and reads
@@ -2350,7 +2369,7 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     }
 
     // healers: triage owns the tick — never fall through to dps logic
-    if (PlayerbotAI::IsHeal(bot))
+    if (IsHealerSpec(bot))
     {
         bool acted = HealerTriageTick(ai, bot);
         ai->SetAIInternalUpdateDelay(acted ? AFTER_CAST_DELAY_MS : IDLE_DELAY_MS);
