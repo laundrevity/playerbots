@@ -946,8 +946,11 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         // full rogue opener. Sap first — the enemy healer, or in double dps
         // whoever we are NOT opening on (TBC sap breaks neither stealth nor
         // starts combat) — then creep to the kill target and cheap shot.
-        // Never auto-attack out of stealth.
-        if (bot->InArena() && ai->HasAura("stealth", bot))
+        // Never auto-attack out of stealth. GATES MUST BE OPEN: server-side
+        // movement ignores door collision, so a preparation-phase creep
+        // walks the rogue straight through the closed gate.
+        if (bot->InArena() && ai->HasAura("stealth", bot) &&
+            bot->GetBattleGround() && bot->GetBattleGround()->GetStatus() == STATUS_IN_PROGRESS)
         {
             AiObjectContext* stealthContext = ai->GetAiObjectContext();
             std::list<ObjectGuid> possible = stealthContext->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
