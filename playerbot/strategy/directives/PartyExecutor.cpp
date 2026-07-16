@@ -435,9 +435,25 @@ bool PartyExecutor::ShouldOwn(PlayerbotAI* ai, Player* bot)
 void PartyExecutor::Tick(PlayerbotAI* ai, Player* bot)
 {
     if (bot->IsInCombat())
+    {
         CombatTick(ai, bot);
-    else
-        NonCombatTick(ai, bot);
+        return;
+    }
+
+    // arena: a healer whose team is bleeding is IN the fight whether or not
+    // the combat flag agrees — triage lived only in CombatTick, and a healer
+    // nobody had hit yet never entered combat, so she jogged formation
+    // points while her master died (observed: resto shaman, 30 log events
+    // in a whole 2v2, zero heals, zero totems)
+    if (bot->InArena() && IsHealerSpec(bot) && bot->GetBattleGround() &&
+        bot->GetBattleGround()->GetStatus() == STATUS_IN_PROGRESS &&
+        HealerTriageTick(ai, bot))
+    {
+        ai->SetAIInternalUpdateDelay(AFTER_CAST_DELAY_MS);
+        return;
+    }
+
+    NonCombatTick(ai, bot);
 }
 
 // One legality gate for every cast: known spell, range, LoS, power,
