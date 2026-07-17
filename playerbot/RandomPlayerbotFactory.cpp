@@ -10,6 +10,7 @@
 #include "AiFactory.h"
 #include "Entities/Player.h"
 #include "RandomPlayerbotFactory.h"
+#include "RandomItemMgr.h"
 #include "SystemConfig.h"
 #include "Social/SocialMgr.h"
 #include "Guilds/GuildMgr.h"
