@@ -3327,6 +3327,7 @@ void RandomItemMgr::BuildEquipCache()
         sLog.outString("Loading equipment cache for %d classes, %d levels, %d slots, %d quality from %d items",
                 MAX_CLASSES, maxLevel, EQUIPMENT_SLOT_END, ITEM_QUALITY_ARTIFACT, sItemStorage.GetMaxEntry());
         int count = 0;
+        uint32 maxSpecSeen = 0;
         do
         {
             Field* fields = results->Fetch();
@@ -3339,12 +3340,31 @@ void RandomItemMgr::BuildEquipCache()
 
             BotEquipKey key(level, clazz, spec, slot, quality);
             equipCache[key].push_back(itemId);
+            if (spec > maxSpecSeen)
+                maxSpecSeen = spec;
             count++;
 
         } while (results->NextRow());
         sLog.outString("Equipment cache loaded from %d records", count);
+
+        // an interrupted first-time build leaves a partial table that every later boot
+        // would load and trust (observed on wotlk: specs 1-9 only -> six classes of
+        // permanently naked bots). If the cache is missing specs that have weight
+        // scales, wipe it and fall through to a full rebuild.
+        uint32 maxValidScale = 0;
+        for (uint32 s = 1; s <= MAX_STAT_SCALES; ++s)
+            if (m_weightScales[s].info.id)
+                maxValidScale = s;
+        if (maxSpecSeen < maxValidScale)
+        {
+            sLog.outError("Equipment cache is PARTIAL (max spec %u, expected %u) - wiping and rebuilding",
+                maxSpecSeen, maxValidScale);
+            equipCache.clear();
+            CharacterDatabase.DirectExecute("DELETE FROM ai_playerbot_equip_cache");
+            results = nullptr;
+        }
     }
-    else
+    if (!results)
     {
         uint64 total = uint64(MAX_CLASSES * 3 * maxLevel * EQUIPMENT_SLOT_END * ITEM_QUALITY_ARTIFACT);
         sLog.outString("Building equipment cache for %d classes, %d specs, %d levels, %d slots, %d quality from %d items (%zu total)",
