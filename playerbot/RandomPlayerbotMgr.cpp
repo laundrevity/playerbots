@@ -1827,6 +1827,23 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
                     BattleGroundQueueTypeId queueTypeId = member[i]->GetBattleGroundQueueTypeId(slot);
                     if (queueTypeId == BATTLEGROUND_QUEUE_NONE)
                         continue;
+                    // a slot with a LIVE invite is not stale: the queue thread just
+                    // matched this team into a fresh arena (opponent re-queued fast).
+                    // Leaving now cancels the invite and that match runs Nv0
+                    // (observed: 2v0 vs empty team 29, 2026-07-22). Stand down —
+                    // the bot's own AI / invite sweeper will accept it. No
+                    // blacklist: the team is healthy and mid-flow.
+                    if (member[i]->IsInvitedForBattleGroundQueueType(queueTypeId))
+                    {
+                        sLog.outBasic("ArenaMatchmaker: %s holds a live invite on queue %u, standing down (team %u re-matched organically)",
+                                      member[i]->GetName(), uint32(queueTypeId), fillTeamId);
+                        stage = FILL_IDLE;
+                        fillTeamId = 0;
+                        fillCount = 0;
+                        fillType = ARENA_TYPE_NONE;
+                        joinSent = false;
+                        return;
+                    }
                     WorldPacket leave(CMSG_BATTLEFIELD_PORT, 20);
                     leave << uint8(BattleGroundMgr::BgArenaType(queueTypeId)) << uint8(0)
                           << uint32(BattleGroundMgr::BgTemplateId(queueTypeId)) << uint16(0) << uint8(0);
