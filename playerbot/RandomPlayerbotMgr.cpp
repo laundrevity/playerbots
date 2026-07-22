@@ -1602,7 +1602,14 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
         if (!needType || now < cooldownUntil)
             return;
 
-        // pick a same-faction all-random-bot team of the needed size
+        // pick a same-faction all-random-bot team of the needed size.
+        // Collect ALL eligible teams and choose randomly, deprioritizing ones
+        // used in the last 15 minutes - taking the first eligible always
+        // returned the lowest team id, so a real team faced the identical
+        // opponents every single match.
+        static std::map<uint32, time_t> recentlyFilled;
+        struct FillCandidate { ArenaTeam* team; ObjectGuid mem[5]; };
+        std::vector<FillCandidate> freshTeams, recentTeams;
         ArenaTeam* pick = nullptr;
         ObjectGuid mem[5];
         for (auto itr = sObjectMgr.GetArenaTeamMapBegin(); itr != sObjectMgr.GetArenaTeamMapEnd(); ++itr)
@@ -1646,8 +1653,25 @@ void RandomPlayerbotMgr::DeterministicArenaMatchmaker()
             if (!eligible || count < uint32(needType))
                 continue;
 
-            pick = team;
-            break;
+            FillCandidate c;
+            c.team = team;
+            for (uint32 i = 0; i < count && i < 5; ++i)
+                c.mem[i] = mem[i];
+            auto used = recentlyFilled.find(team->GetId());
+            if (used != recentlyFilled.end() && now < used->second + 900)
+                recentTeams.push_back(c);
+            else
+                freshTeams.push_back(c);
+        }
+
+        std::vector<FillCandidate>& pool = freshTeams.empty() ? recentTeams : freshTeams;
+        if (!pool.empty())
+        {
+            FillCandidate& chosen = pool[urand(0, pool.size() - 1)];
+            pick = chosen.team;
+            for (uint32 i = 0; i < 5; ++i)
+                mem[i] = chosen.mem[i];
+            recentlyFilled[pick->GetId()] = now;
         }
 
         if (!pick)
