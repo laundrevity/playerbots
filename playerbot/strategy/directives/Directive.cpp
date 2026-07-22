@@ -3,6 +3,7 @@
 #include "playerbot/thirdparty/nlohmann/json.hpp"
 
 #include <cstdlib>
+#include <cctype>
 
 using nlohmann::json;
 
@@ -158,7 +159,61 @@ bool ParseDirective(const std::string& text, Directive& out, std::string& error)
 
     out.giveHealthstoneTo = GetString(j, "give_healthstone_to");
 
+    auto blessing = j.find("blessing");
+    if (blessing != j.end() && blessing->is_object())
+    {
+        Directive::BlessingAssignment ba;
+        auto tgt = blessing->find("target");
+        if (tgt != blessing->end() && tgt->is_object())
+            ba.targetName = GetString(*tgt, "name");
+        ba.spell = GetString(*blessing, "spell");
+        if (!ba.targetName.empty() && !ba.spell.empty())
+            out.blessings.push_back(ba);
+    }
+
     return true;
+}
+
+static std::string LowerName(const char* s)
+{
+    std::string out;
+    while (*s)
+        out += char(std::tolower(static_cast<unsigned char>(*s++)));
+    return out;
+}
+
+std::string GetBlessingOverride(const std::string& serialized, const char* targetName)
+{
+    std::string key = LowerName(targetName) + "=";
+    size_t pos = 0;
+    while (pos < serialized.size())
+    {
+        size_t end = serialized.find(';', pos);
+        if (end == std::string::npos)
+            end = serialized.size();
+        if (serialized.compare(pos, key.size(), key) == 0)
+            return serialized.substr(pos + key.size(), end - pos - key.size());
+        pos = end + 1;
+    }
+    return "";
+}
+
+void SetBlessingOverride(std::string& serialized, const std::string& targetName, const std::string& spell)
+{
+    std::string key = LowerName(targetName.c_str());
+    std::string rebuilt;
+    size_t pos = 0;
+    while (pos < serialized.size())
+    {
+        size_t end = serialized.find(';', pos);
+        if (end == std::string::npos)
+            end = serialized.size();
+        if (serialized.compare(pos, key.size() + 1, key + "=") != 0)
+            rebuilt += serialized.substr(pos, end - pos) + ";";
+        pos = end + 1;
+    }
+    rebuilt += key + "=" + spell + ";";
+    serialized = rebuilt;
 }
 
 }

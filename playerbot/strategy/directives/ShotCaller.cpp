@@ -46,6 +46,11 @@ namespace
         "- cc only when asked or clearly right (mage=Polymorph, rogue=Sap before combat).\n"
         "- if the human asks for a healthstone, set give_healthstone_to to the HUMAN'S name "
         "on the warlock bot's directive (omit the field otherwise).\n"
+        "- if the human asks a paladin bot for a specific blessing ('kings on me', 'gimme "
+        "wisdom'), set blessing {target, spell} on THAT PALADIN'S directive; target is who "
+        "receives the buff (the human is a valid target here). It sticks until changed.\n"
+        "- if the human asks for something NONE of your directive fields can express, say so "
+        "plainly in the reply ('can't steer that yet') instead of agreeing.\n"
         "- directives may only name the LISTED BOTS — never the human.\n"
         "- sometimes you get a Situation line instead of chat: that is you noticing the fight "
         "state on your own — make the call unprompted.\n"
@@ -100,6 +105,13 @@ namespace
              {{"bot", {{"type", "string"}}},
               {"kill_order", {{"type", "array"}, {"items", target}}},
               {"give_healthstone_to", {{"type", "string"}}},
+              {"blessing",
+               {{"type", "object"},
+                {"properties",
+                 {{"target", target},
+                  {"spell", {{"type", "string"},
+                             {"enum", json::array({"kings", "might", "wisdom", "light", "salvation", "sanctuary"})}}}}},
+                {"required", json::array({"target", "spell"})}}},
               {"cooldowns", {{"type", "string"}, {"enum", json::array({"hold", "normal", "burn"})}}},
               {"cc",
                {{"type", "array"},
@@ -396,6 +408,9 @@ void ShotCaller::ProcessJob(const Job& job)
         if (entry.contains("give_healthstone_to") && entry["give_healthstone_to"].is_string() &&
             !entry["give_healthstone_to"].get<std::string>().empty())
             directive["give_healthstone_to"] = entry["give_healthstone_to"];
+
+        if (entry.contains("blessing") && entry["blessing"].is_object())
+            directive["blessing"] = entry["blessing"];
         if (entry.contains("cc"))
             directive["cc"] = entry["cc"];
         if (dispatched == 0 && !reply.empty())

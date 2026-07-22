@@ -195,6 +195,16 @@ bool ApplyDirectiveAction::Execute(Event& event)
             break;
         }
 
+    // "blessing": sticky per-target preference for paladin bots. Stored on the
+    // blackboard past the directive TTL — a buff wish isn't a 6-second desire.
+    if (!incoming.blessings.empty() && bot->getClass() == CLASS_PALADIN)
+    {
+        std::string overrides = context->GetValue<std::string>("blessing overrides")->Get();
+        for (const Directive::BlessingAssignment& ba : incoming.blessings)
+            SetBlessingOverride(overrides, ba.targetName, ba.spell);
+        context->GetValue<std::string>("blessing overrides")->Set(overrides);
+    }
+
     Report(incoming, true, note);
     return true;
 }

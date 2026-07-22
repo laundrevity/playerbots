@@ -59,6 +59,13 @@ namespace ai
         std::string chatSay;              // spoken in party on acceptance (shot-caller reply)
         std::string giveHealthstoneTo;    // warlock: initiate trade with this member, stone rides the trade hook
 
+        struct BlessingAssignment
+        {
+            std::string targetName;       // party member, matched case-insensitively
+            std::string spell;            // short name: kings|might|wisdom|light|salvation|sanctuary
+        };
+        std::vector<BlessingAssignment> blessings;   // paladin: sticky per-target preference
+
         bool IsActiveNow(uint32 nowMs) const { return valid && nowMs < expiresAtMs; }
     };
 
@@ -67,4 +74,10 @@ namespace ai
     bool ParseDirective(const std::string& text, Directive& out, std::string& error);
 
     const char* DirectiveSourceTag(DirectiveSource src);
+
+    // "blessing overrides" blackboard string: "name=spell;name=spell;" with
+    // lowercase names. Sticky: outlives directive TTL by design (a buff wish
+    // is not a 6-second desire).
+    std::string GetBlessingOverride(const std::string& serialized, const char* targetName);
+    void SetBlessingOverride(std::string& serialized, const std::string& targetName, const std::string& spell);
 }

@@ -1,6 +1,7 @@
 
 #include "playerbot/playerbot.h"
 #include "PaladinActions.h"
+#include "playerbot/strategy/directives/Directive.h"
 
 using namespace ai;
 
@@ -73,6 +74,18 @@ std::string CastBlessingAction::GetBlessingForTarget(Unit* target)
     if (target)
     {
         std::vector<std::string> possibleBlessings = GetPossibleBlessingsForTarget(target);
+
+        // directive-seam override ("kings on me" through the shot-caller):
+        // restrict the choice to the requested blessing so the default
+        // priority list can't overwrite it with something else
+        if (target->IsPlayer())
+        {
+            std::string forced = GetBlessingOverride(
+                context->GetValue<std::string>("blessing overrides")->Get(),
+                ((Player*)target)->GetName());
+            if (!forced.empty())
+                possibleBlessings = { "blessing of " + forced };
+        }
         for (const std::string& blessing : possibleBlessings)
         {
             const std::string greaterBlessing = "greater " + blessing;
@@ -262,6 +275,18 @@ std::string CastBlessingOnPartyAction::GetBlessingForTarget(Unit* target)
     if (target)
     {
         std::vector<std::string> possibleBlessings = GetPossibleBlessingsForTarget(target);
+
+        // directive-seam override ("kings on me" through the shot-caller):
+        // restrict the choice to the requested blessing so the default
+        // priority list can't overwrite it with something else
+        if (target->IsPlayer())
+        {
+            std::string forced = GetBlessingOverride(
+                context->GetValue<std::string>("blessing overrides")->Get(),
+                ((Player*)target)->GetName());
+            if (!forced.empty())
+                possibleBlessings = { "blessing of " + forced };
+        }
         for (const std::string& blessing : possibleBlessings)
         {
             // Don't cast greater salvation on possible tank classes
