@@ -1510,11 +1510,16 @@ void RandomPlayerbotMgr::DirectRatedArenaCaptains()
     if (!needRated)
         return;
 
-    bool directedThisSweep = false;
+    // Collect ALL eligible captains and pick randomly, benching recently
+    // directed ones for 15 minutes. Directing the first eligible captain in
+    // iteration order made a real team face the same opponents every match
+    // (observed: one team at 284 season games while seeded teams sat at 0) —
+    // same disease as the wotlk matchmaker's first-eligible pick (0076).
+    static std::map<uint32, time_t> recentlyDirected;   // captain guid counter -> last join
+    time_t now = time(nullptr);
+    std::vector<Player*> fresh, benched;
     ForEachPlayerbot([&](Player* bot)
     {
-        if (directedThisSweep)
-            return;
         // NB regular-BG queue slots don't disqualify: multi-queue is legal and
         // ambient bots camp BG queues whenever JoinBG is on
         if (!bot || !bot->IsInWorld() || bot->InBattleGround() || !bot->HasFreeBattleGroundQueueId())
@@ -1528,14 +1533,31 @@ void RandomPlayerbotMgr::DirectRatedArenaCaptains()
                     isCaptain = true;
         if (!isCaptain || !bot->GetPlayerbotAI())
             return;
+        auto seen = recentlyDirected.find(bot->GetObjectGuid().GetCounter());
+        if (seen != recentlyDirected.end() && now < seen->second + 900)
+            benched.push_back(bot);
+        else
+            fresh.push_back(bot);
+    });
+
+    std::vector<Player*>& pool = fresh.empty() ? benched : fresh;
+    // a declined evaluation is cheap: give a few random captains a shot per sweep
+    for (int attempt = 0; attempt < 3 && !pool.empty(); ++attempt)
+    {
+        uint32 idx = urand(0, pool.size() - 1);
+        Player* bot = pool[idx];
+        pool.erase(pool.begin() + idx);
         // "bg join" (base action): player-presence-driven gates — the "free bg
         // join" variant hard-declines whenever RandomBotAutoJoinBG=0
         bool joined = bot->GetPlayerbotAI()->DoSpecificAction("bg join", Event(), true);
         sLog.outBasic("RandomPlayerbotMgr: directed captain %s to evaluate rated arena join -> %s",
                       bot->GetName(), joined ? "JOINED" : "declined");
         if (joined)
-            directedThisSweep = true;
-    });
+        {
+            recentlyDirected[bot->GetObjectGuid().GetCounter()] = now;
+            break;
+        }
+    }
 #endif
 }
 
