@@ -58,3 +58,31 @@ Unit* ai::GetDirectiveKillTarget(PlayerbotAI* ai, AiObjectContext* context)
     }
     return nullptr;
 }
+
+Unit* ai::FindBlessingOverrideMismatch(PlayerbotAI* ai, AiObjectContext* context, Player* bot)
+{
+    if (bot->getClass() != CLASS_PALADIN || !bot->GetGroup())
+        return nullptr;
+
+    std::string overrides = context->GetValue<std::string>("blessing overrides")->Get();
+    if (overrides.empty())
+        return nullptr;
+
+    for (GroupReference* itr = bot->GetGroup()->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->getSource();
+        if (!member || !member->IsInWorld() || !member->IsAlive())
+            continue;
+        if (member->GetMapId() != bot->GetMapId() || !bot->IsWithinDistInMap(member, 30.0f, false))
+            continue;
+
+        std::string forced = GetBlessingOverride(overrides, member->GetName());
+        if (forced.empty())
+            continue;
+
+        std::string want = "blessing of " + forced;
+        if (!ai->HasMyAura(want, member) && !ai->HasMyAura("greater " + want, member))
+            return member;
+    }
+    return nullptr;
+}

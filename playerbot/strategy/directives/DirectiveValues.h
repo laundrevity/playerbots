@@ -31,4 +31,9 @@ namespace ai
     // rti (skull) targeting applies. Returns nullptr when the directive is
     // absent, expired, or none of its targets are currently attackable.
     Unit* GetDirectiveKillTarget(PlayerbotAI* ai, AiObjectContext* context);
+
+    // Nearby group member whose blessing override names a blessing this
+    // paladin has NOT put on them (a present-but-different blessing counts as
+    // a mismatch — that's exactly the "kings plz while Might is up" case).
+    Unit* FindBlessingOverrideMismatch(PlayerbotAI* ai, AiObjectContext* context, Player* bot);
 }

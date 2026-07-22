@@ -2,6 +2,7 @@
 #include "playerbot/playerbot.h"
 #include "PaladinActions.h"
 #include "playerbot/strategy/directives/Directive.h"
+#include "playerbot/strategy/directives/DirectiveValues.h"
 
 using namespace ai;
 
@@ -217,6 +218,11 @@ std::vector<std::string> CastRaidBlessingAction::GetPossibleBlessingsForTarget(U
 
 Unit* CastBlessingOnPartyAction::GetTarget()
 {
+    // directive-seam: a member with a mismatched blessing override outranks
+    // the "member with no blessing at all" search below
+    if (Unit* mismatch = FindBlessingOverrideMismatch(ai, context, bot))
+        return mismatch;
+
     std::vector<std::string> altBlessings;
     std::vector<std::string> haveBlessings;
     altBlessings.push_back("blessing of might");

@@ -2,6 +2,7 @@
 #include "playerbot/playerbot.h"
 #include "PaladinTriggers.h"
 #include "PaladinActions.h"
+#include "playerbot/strategy/directives/DirectiveValues.h"
 
 using namespace ai;
 
@@ -115,6 +116,11 @@ bool GreaterBlessingTrigger::IsActive()
 
 bool BlessingOnPartyTrigger::IsActive()
 {
+    // directive-seam: a member whose override names a blessing we haven't put
+    // on them re-triggers even though they already carry some other blessing
+    if (FindBlessingOverrideMismatch(ai, context, bot))
+        return true;
+
     std::vector<std::string> altBlessings;
     std::vector<std::string> haveBlessings;
     altBlessings.push_back("blessing of might");
@@ -161,6 +167,10 @@ bool GreaterBlessingOnPartyTrigger::IsActive()
 {
     if (!bot->GetMap()->IsDungeon() && !bot->GetMap()->IsBattleGround())
         return false;
+
+    // directive-seam: same mismatch re-trigger as the normal blessing path
+    if (FindBlessingOverrideMismatch(ai, context, bot))
+        return true;
 
     std::vector<std::string> altBlessings;
     std::vector<std::string> haveBlessings;
