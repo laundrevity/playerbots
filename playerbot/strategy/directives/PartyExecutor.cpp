@@ -577,6 +577,20 @@ bool PartyExecutor::KeepPartyBuffed(PlayerbotAI* ai, Player* bot)
                 break;
             case CLASS_PALADIN:
             {
+                // directive-seam override ("kings plz" through the shot-caller):
+                // outranks the default pick, and a present-but-DIFFERENT blessing
+                // is a recast, not a skip
+                std::string forced = GetBlessingOverride(
+                    ai->GetAiObjectContext()->GetValue<std::string>("blessing overrides")->Get(),
+                    member->GetName());
+                if (!forced.empty())
+                {
+                    std::string want = "blessing of " + forced;
+                    if (!ai->HasAura(want, member) && !ai->HasAura("greater " + want, member))
+                        if (Cast(ai, want.c_str(), member))
+                            return true;
+                    break;
+                }
                 // one blessing per paladin; skip anyone already blessed
                 if (ai->HasAura("blessing of might", member) || ai->HasAura("blessing of wisdom", member) ||
                     ai->HasAura("blessing of kings", member) || ai->HasAura("blessing of salvation", member) ||

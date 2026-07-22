@@ -201,7 +201,11 @@ bool ApplyDirectiveAction::Execute(Event& event)
     {
         std::string overrides = context->GetValue<std::string>("blessing overrides")->Get();
         for (const Directive::BlessingAssignment& ba : incoming.blessings)
+        {
             SetBlessingOverride(overrides, ba.targetName, ba.spell);
+            sLog.outBasic("Directive: %s stores blessing override %s=%s",
+                          bot->GetName(), ba.targetName.c_str(), ba.spell.c_str());
+        }
         context->GetValue<std::string>("blessing overrides")->Set(overrides);
     }
 
