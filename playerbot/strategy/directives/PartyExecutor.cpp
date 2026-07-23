@@ -424,7 +424,23 @@ bool PartyExecutor::ShouldOwn(PlayerbotAI* ai, Player* bot)
         // every combatant including masterless healers (HealerTriageTick)
         return bot->IsAlive();
     if (!ai->HasRealPlayerMaster())
+    {
+        // visibility: a missing/unreal master silently demotes a grouped bot
+        // to the legacy engine (observed: classic dungeon party idling with
+        // zero executor probes — nobody knew the executor wasn't running)
+        static std::map<uint32, uint32> lastLog;
+        uint32 now = WorldTimer::getMSTime();
+        uint32& last = lastLog[bot->GetObjectGuid().GetCounter()];
+        if (bot->GetGroup() && (!last || now - last > 60000))
+        {
+            last = now;
+            Player* m = ai->GetMaster();
+            sLog.outBasic("Executor: NOT owning grouped bot %s (master=%s, masterHasAI=%d)",
+                          bot->GetName(), m ? m->GetName() : "<none>",
+                          (m && m->GetPlayerbotAI()) ? 1 : 0);
+        }
         return false;
+    }
     if (bot->InBattleGround())
         return false;   // regular bgs keep the old brain
     if (!bot->IsAlive())
