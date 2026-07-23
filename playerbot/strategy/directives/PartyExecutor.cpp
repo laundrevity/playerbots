@@ -1252,8 +1252,26 @@ bool PartyExecutor::EleShamanTick(PlayerbotAI* ai, Player* bot, Unit* target)
 {
     if (ThreatCapped(ai, bot, target))
     {
+        DpsIdleProbe(ai, bot, "threat-capped");
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
         return true;
+    }
+
+    // dungeon packs: Blizzard beats single-target once the tank has a pile
+    // (Strat runs were pure Frostbolt into 4-mob pulls)
+    if (!target->IsPlayer() && target->GetVictim() && target->GetVictim() != bot)
+    {
+        uint32 packed = 0;
+        std::list<ObjectGuid> possible = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+        for (const ObjectGuid& guid : possible)
+            if (Unit* mob = ai->GetUnit(guid))
+                if (!mob->IsPlayer() && mob->IsAlive() && mob->IsInCombat() &&
+                    mob->GetDistance(target) < 10.0f)
+                    ++packed;
+        uint32 maxMana = bot->GetMaxPower(POWER_MANA);
+        if (packed >= 4 && maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 50 &&
+            Cast(ai, "blizzard", target))
+            return true;
     }
 
     if ((BurnPolicy(ai) || ArenaBurstWindow(ai, bot, target)) && Cast(ai, "elemental mastery", bot))
@@ -1579,6 +1597,23 @@ bool PartyExecutor::TankFaceAway(PlayerbotAI* ai, Player* bot, Unit* target)
 }
 
 // 4. dps discipline: never ride past the tank's threat
+// cheap visibility for "the dps play badly": mastered bots that end a combat
+// tick without acting log WHY, throttled per bot. Vibes say slow; this says
+// which gate (no-target / threat-capped / rotation-idle) and lets the harness
+// attribute idle time to causes instead of guesses.
+void PartyExecutor::DpsIdleProbe(PlayerbotAI* ai, Player* bot, const char* why)
+{
+    if (!ai->HasRealPlayerMaster() || !bot->IsInCombat())
+        return;
+    static std::map<uint32, uint32> lastLog;
+    uint32 now = WorldTimer::getMSTime();
+    uint32& last = lastLog[bot->GetObjectGuid().GetCounter()];
+    if (last && now - last < 10000)
+        return;
+    last = now;
+    sLog.outBasic("ExecutorIdle: %s %s", bot->GetName(), why);
+}
+
 bool PartyExecutor::ThreatCapped(PlayerbotAI* ai, Player* bot, Unit* target)
 {
     if (PlayerbotAI::IsTank(bot))
@@ -1810,14 +1845,21 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
         return false;
     }
 
-    // Slice and Dice uptime is the whole spec (icy-veins combat rogue)
-    if (combo >= 2 && !ai->HasAura("slice and dice", bot) && Cast(ai, "slice and dice", target))
+    // Slice and Dice uptime is the whole spec (icy-veins combat rogue).
+    // NB self-cast: SnD is a self-buff — casting it "at the enemy" failed
+    // validation every time, and eviscerate was gated behind an aura that
+    // therefore never existed (observed: 59 SS, zero finishers, points
+    // capped at 5 all run)
+    if (combo >= 2 && !ai->HasAura("slice and dice", bot) &&
+        (Cast(ai, "slice and dice", bot) || Cast(ai, "slice and dice", target)))
         return true;
-    if (combo >= 5 && ai->HasAura("slice and dice", bot))
+    if (combo >= 5)
     {
-        // long-lived targets get Rupture, everything else gets Eviscerate
+        // long-lived targets get Rupture, everything else gets Eviscerate;
+        // never sit at cap even if SnD refuses to go up
         bool bossLike = target->GetMaxHealth() > bot->GetMaxHealth() * 3;
-        if (bossLike && !ai->HasAura("rupture", target, false, true) && Cast(ai, "rupture", target))
+        if (ai->HasAura("slice and dice", bot) && bossLike &&
+            !ai->HasAura("rupture", target, false, true) && Cast(ai, "rupture", target))
             return true;
         if (Cast(ai, "eviscerate", target))
             return true;
@@ -2518,6 +2560,7 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     Unit* target = PickTarget(ai, bot);
     if (!target)
     {
+        DpsIdleProbe(ai, bot, "no-target");
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
         return;
     }
@@ -2549,5 +2592,8 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     }
 
     if (!acted)
+    {
+        DpsIdleProbe(ai, bot, "rotation-idle");
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+    }
 }
