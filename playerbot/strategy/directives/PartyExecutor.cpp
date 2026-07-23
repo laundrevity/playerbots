@@ -1677,9 +1677,11 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (TankFaceAway(ai, bot, target))
         return true;
 
-    // survival while actively tanked
-    if (target->GetVictim() == bot && Cast(ai, "shield block", bot))
-        return true;
+    // shield block is survivability, not an action: fire it and fall through
+    // so the tick still generates threat (it burned 47 whole ticks in one
+    // Stratholme run as a returning branch)
+    if (target->GetVictim() == bot)
+        Cast(ai, "shield block", bot);
 
     std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
     uint32 meleeCount = 0;
@@ -1688,24 +1690,45 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
             if (bot->CanReachWithMeleeAttack(attacker))
                 ++meleeCount;
 
-    // Shield Slam > Revenge > Devastate/Sunder, Thunder Clap + Demo on packs,
-    // Heroic Strike as the rage dump (icy-veins/wowtbc.gg prot priority)
+    // vanilla AoE threat is TAB-SUNDER: a loose melee mob gets a sunder
+    // before anything else (beats taunt-spam, starts its threat ledger)
+    if (meleeCount >= 2)
+        for (const ObjectGuid& guid : attackers)
+            if (Unit* attacker = ai->GetUnit(guid))
+                if (attacker != target && attacker->IsAlive() &&
+                    attacker->GetVictim() != bot &&
+                    bot->CanReachWithMeleeAttack(attacker) &&
+                    !IsSoftCrowdControlled(ai, attacker) &&
+                    Cast(ai, "sunder armor", attacker))
+                    return true;
+
+    // Shield Slam > Revenge > Devastate/Sunder, Demo + Battle Shout on packs,
+    // Heroic Strike/Cleave as the true-excess rage dump (icy-veins classic
+    // prot priority; HS replaces the next auto WHICH THEN YIELDS NO RAGE)
     if (Cast(ai, "shield slam", target))
         return true;
     if (Cast(ai, "revenge", target))
         return true;
+#ifndef MANGOSBOT_ZERO
+    // 1.12 thunder clap is battle-stance-only; TBC+ prot uses it tanking
     if (meleeCount >= 2 && Cast(ai, "thunder clap", target))
         return true;
+#endif
     if (meleeCount >= 2 && Cast(ai, "demoralizing shout", target))
         return true;
+    if (meleeCount >= 2 && !ai->HasAura("battle shout", bot) && Cast(ai, "battle shout", bot))
+        return true;    // battle shout = pack-wide threat per cast in vanilla
     if (Cast(ai, "devastate", target))
         return true;
     if (Cast(ai, "sunder armor", target))
         return true;
-    if (bot->GetPower(POWER_RAGE) > 300 && Cast(ai, "heroic strike", target))
-        return true;
-    if (meleeCount >= 2 && bot->GetPower(POWER_RAGE) > 400 && Cast(ai, "cleave", target))
-        return true;
+    if (bot->GetPower(POWER_RAGE) > 400)
+    {
+        if (Cast(ai, meleeCount >= 2 ? "cleave" : "heroic strike", target))
+            return true;
+        // zero HS in every log so far: name the failure if the queue refuses
+        DpsIdleProbe(ai, bot, "rage-dump-failed");
+    }
     if (bot->GetPower(POWER_RAGE) < 200 && Cast(ai, "bloodrage", bot))
         return true;
     return false;
@@ -1859,6 +1882,19 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
         if (Cast(ai, "sinister strike", target))
             return true;
         return false;
+    }
+
+    // diagnostic: every dungeon log so far shows ZERO finishers despite
+    // hundreds of builders — report the combo value the executor sees
+    {
+        static std::map<uint32, uint32> comboLog;
+        uint32 nowMs = WorldTimer::getMSTime();
+        uint32& lastMs = comboLog[bot->GetObjectGuid().GetCounter()];
+        if (bot->IsInCombat() && (!lastMs || nowMs - lastMs > 10000))
+        {
+            lastMs = nowMs;
+            sLog.outBasic("RogueCombo: %s combo=%u", bot->GetName(), uint32(combo));
+        }
     }
 
     // Slice and Dice uptime is the whole spec (icy-veins combat rogue).
