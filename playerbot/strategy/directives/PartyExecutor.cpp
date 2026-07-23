@@ -1668,6 +1668,21 @@ bool PartyExecutor::MeleeGetBehind(PlayerbotAI* ai, Player* bot, Unit* target)
 
 bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
 {
+    // kill-target marking: when the group has no live skull, the tank puts
+    // one on his target — humans read marks, and the bots' rti targeting
+    // (TankTargetValue checks rti first) converges the party on it
+    if (Group* group = bot->GetGroup())
+    {
+        if (target->IsAlive() && !target->IsPlayer())
+        {
+            ObjectGuid skullGuid = group->GetTargetIcon(7);
+            Unit* skullUnit = skullGuid ? ai->GetUnit(skullGuid) : nullptr;
+            if (!skullUnit || !skullUnit->IsAlive() || !skullUnit->IsInCombat())
+                if (skullGuid != target->GetObjectGuid())
+                    group->SetTargetIcon(7, target->GetObjectGuid());
+        }
+    }
+
     if (!ai->HasAura("defensive stance", bot) && Cast(ai, "defensive stance", bot))
         return true;
 
