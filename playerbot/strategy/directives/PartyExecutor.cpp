@@ -1274,7 +1274,8 @@ bool PartyExecutor::EleShamanTick(PlayerbotAI* ai, Player* bot, Unit* target)
     }
 
     // dungeon packs: Blizzard beats single-target once the tank has a pile
-    // (Strat runs were pure Frostbolt into 4-mob pulls)
+    // (Strat runs were pure Frostbolt into 4-mob pulls). Gates loosened from
+    // 4+/50% after the meter showed zero Blizzards across whole runs.
     if (!target->IsPlayer() && target->GetVictim() && target->GetVictim() != bot)
     {
         uint32 packed = 0;
@@ -1285,9 +1286,13 @@ bool PartyExecutor::EleShamanTick(PlayerbotAI* ai, Player* bot, Unit* target)
                     mob->GetDistance(target) < 10.0f)
                     ++packed;
         uint32 maxMana = bot->GetMaxPower(POWER_MANA);
-        if (packed >= 4 && maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 50 &&
-            Cast(ai, "blizzard", target))
-            return true;
+        if (packed >= 3 && maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 30)
+        {
+            if (Cast(ai, "blizzard", target))
+                return true;
+            // dest-targeted cast refused? name it so we know to re-plumb
+            DpsIdleProbe(ai, bot, "blizzard-failed");
+        }
     }
 
     if ((BurnPolicy(ai) || ArenaBurstWindow(ai, bot, target)) && Cast(ai, "elemental mastery", bot))
@@ -1705,6 +1710,28 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
             if (bot->CanReachWithMeleeAttack(attacker))
                 ++meleeCount;
 
+    // pack gathering: casters won't walk to the tank, so the tank walks TO
+    // the caster, dragging his melee train into one AoE-able clump
+    {
+        static std::map<uint32, uint32> lastGather;
+        uint32 nowMs = WorldTimer::getMSTime();
+        uint32& last = lastGather[bot->GetObjectGuid().GetCounter()];
+        if ((!last || nowMs - last > 6000) && meleeCount >= 1)
+            for (const ObjectGuid& guid : attackers)
+                if (Unit* caster = ai->GetUnit(guid))
+                    if (caster->IsAlive() && !caster->IsPlayer() &&
+                        caster->GetPowerType() == POWER_MANA &&
+                        !bot->CanReachWithMeleeAttack(caster) &&
+                        sServerFacade.GetDistance2d(bot, caster) < 30.0f &&
+                        !IsSoftCrowdControlled(ai, caster))
+                    {
+                        last = nowMs;
+                        bot->GetMotionMaster()->MovePoint(0, caster->GetPositionX(),
+                            caster->GetPositionY(), caster->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                        return true;
+                    }
+    }
+
     // vanilla AoE threat is TAB-SUNDER: a loose melee mob gets a sunder
     // before anything else (beats taunt-spam, starts its threat ledger)
     if (meleeCount >= 2)
@@ -1912,6 +1939,19 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
         }
     }
 
+    // pack cleave: blade flurry whenever 2+ mobs are in reach, not just on
+    // burn policy (it was gated behind burns and never fired in dungeons)
+    {
+        uint32 nearbyMelee = 0;
+        std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+        for (const ObjectGuid& guid : attackers)
+            if (Unit* attacker = ai->GetUnit(guid))
+                if (attacker->IsAlive() && bot->CanReachWithMeleeAttack(attacker))
+                    ++nearbyMelee;
+        if (nearbyMelee >= 2 && !ai->HasAura("blade flurry", bot) && Cast(ai, "blade flurry", bot))
+            return true;
+    }
+
     // Slice and Dice uptime is the whole spec (icy-veins combat rogue).
     // NB self-cast: SnD is a self-buff — casting it "at the enemy" failed
     // validation every time, and eviscerate was gated behind an aura that
@@ -2107,11 +2147,25 @@ bool PartyExecutor::ArmsWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (target->GetHealthPercent() < 20.0f && Cast(ai, "execute", target))
         return true;
 
+    // pack AoE: sweeping strikes doubles everything, cleave replaces HS as
+    // the rage dump (vanilla arms cleave rotation)
+    uint32 nearbyMelee = 0;
+    {
+        std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+        for (const ObjectGuid& guid : attackers)
+            if (Unit* attacker = ai->GetUnit(guid))
+                if (attacker->IsAlive() && bot->CanReachWithMeleeAttack(attacker))
+                    ++nearbyMelee;
+    }
+    if (nearbyMelee >= 2 && Cast(ai, "sweeping strikes", bot))
+        return true;
+
     if (Cast(ai, "mortal strike", target))
         return true;
 
     // rage dump only above the MS reserve
-    if (bot->GetPower(POWER_RAGE) > 60 && Cast(ai, "heroic strike", target))
+    if (bot->GetPower(POWER_RAGE) > 60 &&
+        Cast(ai, nearbyMelee >= 2 ? "cleave" : "heroic strike", target))
         return true;
 
     return false;
