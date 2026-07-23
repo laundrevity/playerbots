@@ -2556,6 +2556,7 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     // mid-cast: let the cast land instead of walking through it
     if (bot->IsNonMeleeSpellCasted(false, true, true))
     {
+        DpsIdleProbe(ai, bot, "mid-cast");
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
         return;
     }
@@ -2570,7 +2571,10 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
 
     // 1. standing cc duty from the seam
     if (KeepCcApplied(ai, bot))
+    {
+        DpsIdleProbe(ai, bot, "cc-duty");
         return;
+    }
 
     // 2/3. reflexes + one target decision
     Unit* target = PickTarget(ai, bot);
@@ -2588,7 +2592,10 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
         return;
 
     if (MeleeGetBehind(ai, bot, target))
+    {
+        DpsIdleProbe(ai, bot, "repositioning");
         return;
+    }
 
     // 5. class rotation
     bool acted = false;
