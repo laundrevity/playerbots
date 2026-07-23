@@ -1457,6 +1457,25 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
             nearest = attacker;
         }
     }
+    if (!nearest)
+    {
+        // between-kill gap: the attackers list can empty for a beat while the
+        // pack still fights the group (10x "no-target" probes in one run) —
+        // pick up any hostile already in combat nearby
+        std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+        for (const ObjectGuid& guid : possible)
+        {
+            Unit* mob = ai->GetUnit(guid);
+            if (!mob || mob->IsPlayer() || sServerFacade.UnitIsDead(mob) || !mob->IsInCombat())
+                continue;
+            float distance = sServerFacade.GetDistance2d(bot, mob);
+            if (distance < best && distance < 30.0f)
+            {
+                best = distance;
+                nearest = mob;
+            }
+        }
+    }
     if (nearest)
         return nearest;
 
@@ -1662,6 +1681,10 @@ bool PartyExecutor::MeleeGetBehind(PlayerbotAI* ai, Player* bot, Unit* target)
     if (target->IsPlayer())
         return false;   // never chase a moving player's back: the reposition
                         // loop starves the whole rotation (arena regression)
+    if (target->IsMoving())
+        return false;   // gathering tanks drag packs around now — chasing a
+                        // moving mob's back is pure thrash (17x reposition
+                        // probes in one run); wait for it to settle
     if (target->GetVictim() == bot)
         return false;
     if (!target->HasInArc(bot, M_PI_F))
@@ -1960,11 +1983,21 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (combo >= 2 && !ai->HasAura("slice and dice", bot) &&
         (Cast(ai, "slice and dice", bot) || Cast(ai, "slice and dice", target)))
         return true;
+
+    // vanilla combo is PER-TARGET and trash dies in seconds: holding for 5
+    // wastes everything (probes: combo=0 at 30 of 36 samples, 93 builders ->
+    // one finisher). Spend EARLY on dying mobs; hold to 5 only on bosses.
+    bool bossLike = target->GetMaxHealth() > bot->GetMaxHealth() * 3;
+    if (!bossLike && combo >= 2 && target->GetHealthPercent() < 40.0f &&
+        Cast(ai, "eviscerate", target))
+        return true;
+    if (!bossLike && combo >= 3 && target->GetHealthPercent() < 60.0f &&
+        Cast(ai, "eviscerate", target))
+        return true;
     if (combo >= 5)
     {
         // long-lived targets get Rupture, everything else gets Eviscerate;
         // never sit at cap even if SnD refuses to go up
-        bool bossLike = target->GetMaxHealth() > bot->GetMaxHealth() * 3;
         if (ai->HasAura("slice and dice", bot) && bossLike &&
             !ai->HasAura("rupture", target, false, true) && Cast(ai, "rupture", target))
             return true;
