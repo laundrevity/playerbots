@@ -445,9 +445,19 @@ void PartyExecutor::Tick(PlayerbotAI* ai, Player* bot)
     // nobody had hit yet never entered combat, so she jogged formation
     // points while her master died (observed: resto shaman, 30 log events
     // in a whole 2v2, zero heals, zero totems)
-    if (bot->InArena() && IsHealerSpec(bot) && bot->GetBattleGround() &&
-        bot->GetBattleGround()->GetStatus() == STATUS_IN_PROGRESS &&
-        HealerTriageTick(ai, bot))
+    bool oocTriage = false;
+    if (bot->InArena())
+        oocTriage = bot->GetBattleGround() &&
+                    bot->GetBattleGround()->GetStatus() == STATUS_IN_PROGRESS;
+    else if (ai->HasRealPlayerMaster() && bot->GetGroup())
+    {
+        // dungeon/world groups: heal and DISPEL between pulls too (Stratholme
+        // plagues sat uncured until the next fight started) — but never at the
+        // cost of drinking: low mana means sit down, not top-off
+        uint32 maxMana = bot->GetMaxPower(POWER_MANA);
+        oocTriage = !maxMana || bot->GetPower(POWER_MANA) * 100 / maxMana > 30;
+    }
+    if (oocTriage && IsHealerSpec(bot) && HealerTriageTick(ai, bot))
     {
         ai->SetAIInternalUpdateDelay(AFTER_CAST_DELAY_MS);
         return;
@@ -2356,6 +2366,11 @@ bool PartyExecutor::HealerTriageTick(PlayerbotAI* ai, Player* bot)
                                           partner->GetPositionZ(), FORCED_MOVEMENT_RUN);
         return true;
     }
+
+    // nothing needed healing: cure whatever's dispellable before going idle
+    if (DispelPartyTick(ai, bot))
+        return true;
+
     return false;
 }
 
