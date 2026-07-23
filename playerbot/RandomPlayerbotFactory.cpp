@@ -1579,5 +1579,9 @@ std::string RandomPlayerbotFactory::CreateRandomArenaTeamName()
 
 void RandomPlayerbotFactory::GearArenaTeamMember(Player* bot)
 {
+#ifdef MANGOSBOT_ZERO
+    (void)bot;      // vanilla has no arena teams
+#else
     GearArenaBot(bot);
+#endif
 }

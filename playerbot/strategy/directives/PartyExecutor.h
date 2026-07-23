@@ -76,5 +76,6 @@ namespace ai
         static bool ShadowPriestTick(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool RestoShamanTick(PlayerbotAI* ai, Player* bot);
         static bool HealerTriageTick(PlayerbotAI* ai, Player* bot);
+        static bool DispelPartyTick(PlayerbotAI* ai, Player* bot);
     };
 }

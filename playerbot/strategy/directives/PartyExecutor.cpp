@@ -2142,6 +2142,87 @@ bool PartyExecutor::ShadowPriestTick(PlayerbotAI* ai, Player* bot, Unit* target)
 // old engine left them camping the start room — observed as "fighting
 // them one at a time"). Movement: stay glued to the triage target /
 // partner; never chase enemies.
+// Cure harmful dispellable auras on nearby group members. Spell names cover
+// classic through wotlk; Cast() fails cleanly on ranks a class/era lacks.
+bool PartyExecutor::DispelPartyTick(PlayerbotAI* ai, Player* bot)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
+
+    uint32 canCure = 0;
+    switch (bot->getClass())
+    {
+        case CLASS_PRIEST:  canCure = (1 << DISPEL_MAGIC) | (1 << DISPEL_DISEASE); break;
+        case CLASS_PALADIN: canCure = (1 << DISPEL_MAGIC) | (1 << DISPEL_DISEASE) | (1 << DISPEL_POISON); break;
+        case CLASS_SHAMAN:  canCure = (1 << DISPEL_DISEASE) | (1 << DISPEL_POISON); break;
+        case CLASS_DRUID:   canCure = (1 << DISPEL_CURSE) | (1 << DISPEL_POISON); break;
+        case CLASS_MAGE:    canCure = (1 << DISPEL_CURSE); break;
+        default: return false;
+    }
+
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->getSource();
+        if (!member || !member->IsInWorld() || !member->IsAlive() ||
+            member->GetMapId() != bot->GetMapId() ||
+            sServerFacade.GetDistance2d(bot, member) > 30.0f)
+            continue;
+
+        uint32 needMask = 0;
+        Unit::SpellAuraHolderMap const& holders = member->GetSpellAuraHolderMap();
+        for (const auto& pair : holders)
+        {
+            SpellAuraHolder* holder = pair.second;
+            if (!holder || holder->IsPositive())
+                continue;
+            needMask |= (1 << holder->GetSpellProto()->Dispel);
+        }
+        needMask &= canCure;
+        if (!needMask)
+            continue;
+
+        // magic (polymorph, fear effects) first, then disease/poison/curse
+        if (needMask & (1 << DISPEL_MAGIC))
+        {
+            if (Cast(ai, "dispel magic", member))
+                return true;
+            if (Cast(ai, "cleanse", member))
+                return true;
+        }
+        if (needMask & (1 << DISPEL_DISEASE))
+        {
+            if (Cast(ai, "abolish disease", member))
+                return true;
+            if (Cast(ai, "cure disease", member))
+                return true;
+            if (Cast(ai, "cleanse", member))
+                return true;
+            if (Cast(ai, "purify", member))
+                return true;
+        }
+        if (needMask & (1 << DISPEL_POISON))
+        {
+            if (Cast(ai, "abolish poison", member))
+                return true;
+            if (Cast(ai, "cure poison", member))
+                return true;
+            if (Cast(ai, "cleanse", member))
+                return true;
+            if (Cast(ai, "purify", member))
+                return true;
+        }
+        if (needMask & (1 << DISPEL_CURSE))
+        {
+            if (Cast(ai, "remove curse", member))
+                return true;
+            if (Cast(ai, "remove lesser curse", member))
+                return true;
+        }
+    }
+    return false;
+}
+
 bool PartyExecutor::HealerTriageTick(PlayerbotAI* ai, Player* bot)
 {
     Group* group = bot->GetGroup();
@@ -2184,6 +2265,11 @@ bool PartyExecutor::HealerTriageTick(PlayerbotAI* ai, Player* bot)
                                           partner->GetPositionZ(), FORCED_MOVEMENT_RUN);
         return true;
     }
+
+    // dispels (Stratholme plagues, polymorphs, poisons) outrank comfort
+    // healing but never an emergency heal
+    if (lowestPct > 45.0f && DispelPartyTick(ai, bot))
+        return true;
 
     switch (bot->getClass())
     {
