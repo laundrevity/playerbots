@@ -1955,8 +1955,22 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
         }
     }
 
-    // vanilla AoE threat is TAB-SUNDER: a loose melee mob gets a sunder
-    // before anything else (beats taunt-spam, starts its threat ledger)
+    // Priority rebuilt after the DW-respec probe (25 min: 108 sunders, 40
+    // bloodthirsts on a 6s cd, TWELVE heroic strikes — sunder spam ate every
+    // gcd and all the rage). Bloodthirst on cooldown is the core; a loose mob
+    // gets ONE ledger-starting sunder, the kill target builds to 5 stacks
+    // once; everything past that is the HS/cleave dump.
+    if (BurnPolicy(ai) && Cast(ai, "death wish", bot))
+        return true;    // fury burn button, honors the shot-caller's 'burn'
+    if (Cast(ai, "bloodthirst", target))
+        return true;
+    if (Cast(ai, "shield slam", target))
+        return true;
+    if (Cast(ai, "revenge", target))
+        return true;
+
+    // tab-sunder: start each loose melee mob's threat ledger ONCE — a mob
+    // that's already sundered gained nothing from another 15-rage refresh
     if (meleeCount >= 2)
         for (const ObjectGuid& guid : attackers)
             if (Unit* attacker = ai->GetUnit(guid))
@@ -1964,20 +1978,10 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
                     attacker->GetVictim() != bot &&
                     bot->CanReachWithMeleeAttack(attacker) &&
                     !IsSoftCrowdControlled(ai, attacker) &&
+                    !ai->GetAura("sunder armor", attacker) &&
                     Cast(ai, "sunder armor", attacker))
                     return true;
 
-    // Shield Slam > Revenge > Devastate/Sunder, Demo + Battle Shout on packs,
-    // Heroic Strike/Cleave as the true-excess rage dump (icy-veins classic
-    // prot priority; HS replaces the next auto WHICH THEN YIELDS NO RAGE).
-    // Bloodthirst first for the 3/31/17 dual-wield tank (self-gates: sword-
-    // and-board prot doesn't know it, shield casts fail without a shield)
-    if (Cast(ai, "bloodthirst", target))
-        return true;
-    if (Cast(ai, "shield slam", target))
-        return true;
-    if (Cast(ai, "revenge", target))
-        return true;
 #ifndef MANGOSBOT_ZERO
     // 1.12 thunder clap is battle-stance-only; TBC+ prot uses it tanking
     if (meleeCount >= 2 && Cast(ai, "thunder clap", target))
@@ -1985,13 +1989,24 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
 #endif
     if (meleeCount >= 2 && Cast(ai, "demoralizing shout", target))
         return true;
-    if (meleeCount >= 2 && !ai->HasAura("battle shout", bot) && Cast(ai, "battle shout", bot))
-        return true;    // battle shout = pack-wide threat per cast in vanilla
+    if (!ai->HasAura("battle shout", bot) && Cast(ai, "battle shout", bot))
+        return true;    // maintained: pack-wide threat + party AP (was 5 casts/25min)
     if (Cast(ai, "devastate", target))
         return true;
-    if (Cast(ai, "sunder armor", target))
-        return true;
-    if (bot->GetPower(POWER_RAGE) > 400)
+
+    // kill-target sunder: build to 5 stacks, refresh only when expiring —
+    // NOT the old unconditional refresh that soaked every spare gcd
+    {
+        Aura* sunder = ai->GetAura("sunder armor", target);
+        uint32 stacks = sunder ? sunder->GetStackAmount() : 0;
+        int32 remaining = sunder ? sunder->GetAuraDuration() : 0;
+        if ((stacks < 5 || remaining < 6000) && Cast(ai, "sunder armor", target))
+            return true;
+    }
+
+    // rage dump: DW income is huge and HS/cleave ride the next swing (off-
+    // gcd) — 30 rage keeps BT funded while actually spending the surplus
+    if (bot->GetPower(POWER_RAGE) > 300)
     {
         if (Cast(ai, meleeCount >= 2 ? "cleave" : "heroic strike", target))
             return true;
