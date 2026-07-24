@@ -210,6 +210,15 @@ bool ApplyDirectiveAction::Execute(Event& event)
         context->GetValue<std::string>("blessing overrides")->Set(overrides);
     }
 
+    // "pulling": sticky pull pacing — stored past the directive TTL ("stop
+    // pulling" means until countermanded). Any bot stores it; only the tank's
+    // auto-advance reads its own copy.
+    if (!incoming.pulling.empty())
+    {
+        context->GetValue<std::string>("pull policy")->Set(incoming.pulling == "normal" ? "" : incoming.pulling);
+        sLog.outBasic("Directive: %s pull policy '%s'", bot->GetName(), incoming.pulling.c_str());
+    }
+
     // "use": one-shot emergency cooldown from the shot-caller ("oh shit"
     // moments). Whitelisted here; legality (known, off cooldown, resources)
     // stays with the normal cast path. Lay on Hands picks the most hurt ally.

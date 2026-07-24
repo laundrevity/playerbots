@@ -27,6 +27,16 @@ namespace ai
             : ManualSetValue<std::string>(ai, "", name) {}
     };
 
+    // Sticky pull pacing for the tank: "" (normal), "hold", or "fast". Set by
+    // the pulling directive verb; deliberately outlives the directive TTL —
+    // "stop pulling" means until countermanded, not for six seconds.
+    class PullPolicyValue : public ManualSetValue<std::string>
+    {
+    public:
+        PullPolicyValue(PlayerbotAI* ai, std::string name = "pull policy")
+            : ManualSetValue<std::string>(ai, "", name) {}
+    };
+
     // First still-valid kill-order entry, with the same legality checks the
     // rti (skull) targeting applies. Returns nullptr when the directive is
     // absent, expired, or none of its targets are currently attackable.

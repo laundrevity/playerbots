@@ -60,6 +60,10 @@ namespace
         "(or vanish to dump aggro), paladin = lay on hands to save a dying ally, hunter = feign "
         "death, druid = barkskin, mage = ice block. Only a spell that bot's class has.\n"
         "- use fires ONCE, immediately — omit it unless the moment needs it RIGHT NOW.\n"
+        "- pulling goes on the TANK's directive and STICKS until changed: hold = park "
+        "('stop pulling', 'hold', 'afk', 'brb', 'need mana'), fast = chain-pull with looser "
+        "hp/mana waits ('pull faster', 'go go go', 'speed up'), normal = default pacing "
+        "('resume', 'pull again', 'go'). Acknowledge the change in the reply.\n"
         "- reply: ONE short casual party-chat answer, like a terse guildmate (max 12 words, "
         "no roleplay flourishes, no emoji).";
 
@@ -123,6 +127,7 @@ namespace
                                              "vanish", "feign death", "divine protection", "divine shield",
                                              "lay on hands", "barkskin", "frenzied regeneration", "ice block"})}}},
               {"cooldowns", {{"type", "string"}, {"enum", json::array({"hold", "normal", "burn"})}}},
+              {"pulling", {{"type", "string"}, {"enum", json::array({"hold", "normal", "fast"})}}},
               {"cc",
                {{"type", "array"},
                 {"items",
@@ -472,6 +477,9 @@ void ShotCaller::ProcessJob(const Job& job)
         if (entry.contains("use") && entry["use"].is_string() &&
             !entry["use"].get<std::string>().empty())
             directive["use"] = entry["use"];
+        if (entry.contains("pulling") && entry["pulling"].is_string() &&
+            !entry["pulling"].get<std::string>().empty())
+            directive["pulling"] = entry["pulling"];
         if (entry.contains("cc"))
             directive["cc"] = entry["cc"];
         if (dispatched == 0 && !reply.empty())

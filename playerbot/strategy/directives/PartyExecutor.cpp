@@ -45,8 +45,11 @@ namespace
 
     // the human tank's pacing checklist: nobody fighting, nobody low,
     // mana users watered — shared by every pull-on-your-own mode
-    bool PartyReadyToPull(Group* group)
+    bool PartyReadyToPull(Group* group, bool fast = false)
     {
+        // fast = chain-pull pacing: only genuinely dangerous states wait
+        uint32 hpWait = fast ? 4 : 6;      // tenths: below 40%/60% hp
+        uint32 manaWait = fast ? 3 : 5;    // tenths: below 30%/50% mana
         for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
             Player* member = itr->getSource();
@@ -54,11 +57,11 @@ namespace
                 continue;
             if (member->IsInCombat())
                 return false;
-            if (member->GetHealth() * 10 < member->GetMaxHealth() * 6)
-                return false;   // someone below 60% hp: wait
+            if (member->GetHealth() * 10 < member->GetMaxHealth() * hpWait)
+                return false;
             if (member->GetPowerType() == POWER_MANA &&
-                member->GetPower(POWER_MANA) * 2 < member->GetMaxPower(POWER_MANA))
-                return false;   // a mana user below 50%: let them drink
+                member->GetPower(POWER_MANA) * 10 < member->GetMaxPower(POWER_MANA) * manaWait)
+                return false;   // let the mana users drink
         }
         return true;
     }
@@ -786,13 +789,54 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
         return false;
     if (!PlayerbotAI::IsTank(bot))
         return false;
-    if (HoldPolicy(ai))
-        return false;   // "hold" in party chat parks the tank
+    AiObjectContext* context = ai->GetAiObjectContext();
+    std::string pullPolicy = context->GetValue<std::string>("pull policy")->Get();
+    if (HoldPolicy(ai) || pullPolicy == "hold")
+        return false;   // "stop pulling" in party chat parks the tank (sticky)
+    bool fast = pullPolicy == "fast";
 
     Player* master = ai->GetMaster();
     Group* group = bot->GetGroup();
     if (!master || !group || !master->IsInWorld() || master->GetMapId() != bot->GetMapId())
         return false;
+
+    // healer-away watch: an explicit /afk parks pulls immediately; the human
+    // going idle (no move, no turn, no combat for 2 min) parks them too.
+    // Announce each transition once so the pause is legible from the party.
+    {
+        bool away = master->isAFK();
+        uint32 nowMs = WorldTimer::getMSTime();
+        if (!away)
+        {
+            static std::map<uint32, std::tuple<float, float, float, uint32>> pose;
+            auto& p = pose[master->GetObjectGuid().GetCounter()];
+            if (std::fabs(std::get<0>(p) - master->GetPositionX()) > 0.5f ||
+                std::fabs(std::get<1>(p) - master->GetPositionY()) > 0.5f ||
+                std::fabs(std::get<2>(p) - master->GetOrientation()) > 0.05f ||
+                master->IsInCombat())
+                p = {master->GetPositionX(), master->GetPositionY(), master->GetOrientation(), nowMs};
+            else if (nowMs - std::get<3>(p) > 120000)
+                away = true;
+        }
+        static std::map<uint32, bool> saidAway;
+        bool& said = saidAway[bot->GetObjectGuid().GetCounter()];
+        if (away)
+        {
+            if (!said)
+            {
+                said = true;
+                ai->TellPlayerNoFacing(master, "healer's away — holding pulls",
+                                       PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, false);
+            }
+            return false;
+        }
+        if (said)
+        {
+            said = false;
+            ai->TellPlayerNoFacing(master, "healer's back — pulling on",
+                                   PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, false);
+        }
+    }
 
     // wait for the human: never advance further than ~35y from them
     if (sServerFacade.GetDistance2d(bot, master) > 35.0f)
@@ -801,14 +845,16 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
         return true;    // stand ground, don't run back either
     }
 
-    // human-tank pacing checklist
-    if (!PartyReadyToPull(group))
+    // human-tank pacing checklist (fast = chain-pull thresholds)
+    if (!PartyReadyToPull(group, fast))
         return false;
 
-    // next pack: nearest hostile in the master's heading cone
+    // next pack: nearest hostile in the master's heading cone. Fast mode
+    // ignores the cone (nearest pack, any direction); normal mode also takes
+    // anything close to the TANK himself — a pack on the path shouldn't wait
+    // for the healer's camera.
     float heading = master->GetOrientation();
     float hx = std::cos(heading), hy = std::sin(heading);
-    AiObjectContext* context = ai->GetAiObjectContext();
     std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
     Unit* pick = nullptr;
     float best = 45.0f;
@@ -825,8 +871,11 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
         if (distance < 1.0f || distance > best)
             continue;
         // inside the heading cone? (dot product against the facing vector)
-        if ((dx * hx + dy * hy) / distance < 0.25f)
-            continue;   // cos(~75°)
+        if (!fast && (dx * hx + dy * hy) / distance < 0.25f)   // cos(~75°)
+        {
+            if (candidate->GetDistance(bot) > 20.0f)
+                continue;   // off-route and not near the tank either
+        }
         best = distance;
         pick = candidate;
     }

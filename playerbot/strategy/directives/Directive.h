@@ -59,6 +59,7 @@ namespace ai
         std::string chatSay;              // spoken in party on acceptance (shot-caller reply)
         std::string giveHealthstoneTo;    // warlock: initiate trade with this member, stone rides the trade hook
         std::string useSpell;             // one-shot emergency cooldown ("shield wall"), whitelist-checked at apply
+        std::string pulling;              // tank pull pacing: hold|normal|fast — stored sticky on "pull policy"
 
         struct BlessingAssignment
         {
