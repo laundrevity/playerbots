@@ -72,8 +72,7 @@ namespace
         return nullptr;
     }
 
-    // the buff aura an item applies = its first item spell (holds for the
-    // flasks/elixirs/jujus/GoA/alcohol used here)
+    // the item's use spell (raw — enchant resolution wants this one)
     uint32 ItemBuffSpell(uint32 itemId)
     {
         ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId);
@@ -85,9 +84,27 @@ namespace
         return 0;
     }
 
-    bool HasBuffOf(Player* bot, uint32 itemId)
+    // the aura the item actually leaves on you: some use-spells only TRIGGER
+    // the real buff (R.O.I.D.S. 10667 -> "Holy Strength" 20007). Checking
+    // the use-spell's aura read those buffs as missing and re-ate the item
+    // every upkeep pass (finding C2C-20260724-1339-002).
+    uint32 ItemBuffAura(uint32 itemId)
     {
         uint32 spellId = ItemBuffSpell(itemId);
+        if (!spellId)
+            return 0;
+        SpellEntry const* spellInfo = sServerFacade.LookupSpellInfo(spellId);
+        if (spellInfo)
+            for (int i = 0; i < MAX_EFFECT_INDEX; ++i)
+                if (spellInfo->Effect[i] == SPELL_EFFECT_TRIGGER_SPELL &&
+                    spellInfo->EffectTriggerSpell[i])
+                    return spellInfo->EffectTriggerSpell[i];
+        return spellId;
+    }
+
+    bool HasBuffOf(Player* bot, uint32 itemId)
+    {
+        uint32 spellId = ItemBuffAura(itemId);
         return spellId && bot->HasAura(spellId);
     }
 
@@ -149,39 +166,52 @@ namespace
             bot->StoreNewItemInBestSlots(itemId, want - have);
     }
 
+    // A category is a set of mutually EXCLUSIVE alternatives, preferred
+    // first: satisfied when ANY member's aura is up, else the first
+    // available item is applied. This core's stacking rules make Juju Power
+    // and R.O.I.D.S. replace each other (runtime: Juju Power aura_off at the
+    // same ms Holy Strength lands) — modeling them as independent desires
+    // churned buffs and ate consumables forever (C2C-20260724-1339-002).
+    using BuffCategory = std::vector<uint32>;
+
     // persistent sets per the profile doc (well-fed foods deferred: eating
     // channels don't fit the between-pull cadence yet)
-    void PersistentSetFor(Player* bot, PlayerbotAI* ai, std::vector<uint32>& out)
+    void PersistentSetFor(Player* bot, PlayerbotAI* ai, std::vector<BuffCategory>& out)
     {
         bool tank = TankRole(bot);
         bool healer = PlayerbotAI::IsHeal(bot);
         switch (bot->getClass())
         {
             case CLASS_WARRIOR:
-                out = { FLASK_TITANS, MONGOOSE, JUJU_POWER, JUJU_MIGHT, ROIDS, FORTITUDE, RUMSEY_BLACK };
+                out = { { FLASK_TITANS }, { MONGOOSE }, { JUJU_POWER, ROIDS },
+                        { JUJU_MIGHT }, { FORTITUDE }, { RUMSEY_BLACK } };
                 if (tank)
-                    out.push_back(GIFT_OF_ARTHAS);   // tank-only: mobs hit HIM
+                    out.push_back({ GIFT_OF_ARTHAS });   // tank-only: mobs hit HIM
                 break;
             case CLASS_ROGUE:
-                out = { FLASK_TITANS, MONGOOSE, JUJU_POWER, JUJU_MIGHT, SCORPOK, FORTITUDE, RUMSEY_BLACK };
+                out = { { FLASK_TITANS }, { MONGOOSE }, { JUJU_POWER, ROIDS },
+                        { JUJU_MIGHT }, { SCORPOK }, { FORTITUDE }, { RUMSEY_BLACK } };
                 break;
             case CLASS_MAGE:
             {
                 int spec = AiFactory::GetPlayerSpecTab(bot);
-                out = { FLASK_SUPREME, GREATER_ARCANE, MAGEBLOOD, CEREBRAL, FORTITUDE, RUMSEY_BLACK };
+                out = { { FLASK_SUPREME }, { GREATER_ARCANE }, { MAGEBLOOD },
+                        { CEREBRAL }, { FORTITUDE }, { RUMSEY_BLACK } };
                 if (spec == 1)
-                    out.push_back(GREATER_FIREPOWER);
+                    out.push_back({ GREATER_FIREPOWER });
                 else if (spec == 2)
-                    out.push_back(FROST_POWER);
+                    out.push_back({ FROST_POWER });
                 break;
             }
             case CLASS_PALADIN:
                 if (healer)
-                    out = { FLASK_WISDOM, MAGEBLOOD, CEREBRAL, FORTITUDE, RUMSEY_BLACK };
+                    out = { { FLASK_WISDOM }, { MAGEBLOOD }, { CEREBRAL },
+                            { FORTITUDE }, { RUMSEY_BLACK } };
                 break;
             case CLASS_SHAMAN:
                 if (healer)
-                    out = { FLASK_WISDOM, MAGEBLOOD, JUJU_GUILE, FORTITUDE, RUMSEY_BLACK };
+                    out = { { FLASK_WISDOM }, { MAGEBLOOD }, { JUJU_GUILE },
+                            { FORTITUDE }, { RUMSEY_BLACK } };
                 break;
             default:
                 break;
@@ -206,10 +236,10 @@ bool Consumables::OutOfCombatTick(PlayerbotAI* ai, Player* bot)
     if (Ready(th.restockMs, nowMs, RESTOCK_THROTTLE_MS))
     {
         th.restockMs = nowMs;
-        std::vector<uint32> persistent;
+        std::vector<BuffCategory> persistent;
         PersistentSetFor(bot, ai, persistent);
-        for (uint32 itemId : persistent)
-            Restock(bot, itemId, 2);
+        for (const BuffCategory& category : persistent)
+            Restock(bot, category.front(), 2);   // stock the winner only
         for (uint32 itemId : { MIGHTY_RAGE, MAJOR_MANA, DARK_RUNE, LIVING_ACTION, THISTLE_TEA,
                                OIL_OF_IMMOLATION })
             Restock(bot, itemId, 3);
@@ -228,13 +258,26 @@ bool Consumables::OutOfCombatTick(PlayerbotAI* ai, Player* bot)
             Restock(bot, MANA_OIL, 2);
     }
 
-    // persistent buffs: reapply whatever is missing, one per tick
+    // persistent buffs: a category is satisfied when ANY alternative's aura
+    // is up; otherwise the first available item wins. One apply per tick.
     {
-        std::vector<uint32> persistent;
+        std::vector<BuffCategory> persistent;
         PersistentSetFor(bot, ai, persistent);
-        for (uint32 itemId : persistent)
-            if (ApplySelfBuffItem(bot, itemId))
-                return true;
+        for (const BuffCategory& category : persistent)
+        {
+            bool satisfied = false;
+            for (uint32 itemId : category)
+                if (HasBuffOf(bot, itemId))
+                {
+                    satisfied = true;
+                    break;
+                }
+            if (satisfied)
+                continue;
+            for (uint32 itemId : category)
+                if (ApplySelfBuffItem(bot, itemId))
+                    return true;
+        }
     }
 
     // weapon consumables. Horde melee keep the MAIN hand clean for the
