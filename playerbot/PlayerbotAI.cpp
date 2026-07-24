@@ -4253,6 +4253,18 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, uint8 effectMask, b
     spell->SetCastItem(itemTarget ? itemTarget : aiObjectContext->GetValue<Item*>("item for spell", spellid)->Get());
     spell->m_targets.setItemTarget(spell->GetCastItem());
 
+    // dest-targeted spells (Blizzard, Flamestrike, Rain of Fire): CheckCast
+    // with no destination always fails, which vetoed every executor AoE cast
+    // before CastSpell's (correct) dest fill could ever run — mirror it here
+    if (spellInfo->Targets & TARGET_FLAG_DEST_LOCATION)
+    {
+        WorldLocation aoe = aiObjectContext->GetValue<WorldLocation>("aoe position")->Get();
+        if (aoe.coord_x != 0)
+            spell->m_targets.setDestination(aoe.coord_x, aoe.coord_y, aoe.coord_z);
+        else if (target)
+            spell->m_targets.setDestination(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+    }
+
     SpellCastResult result = spell->CheckCast(true);
     delete spell;
 	//if (oldSel)
