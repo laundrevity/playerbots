@@ -2580,13 +2580,30 @@ bool PartyExecutor::FuryWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (!ai->HasAura("battle shout", bot) && Cast(ai, "battle shout", bot))
         return true;    // imp battle shout is the fury AP centerpiece
 
-    if (BurnPolicy(ai))
+    // rage engines first: BT at 4.5/min on a 6s cd = starvation. Bloodrage
+    // and berserker rage are free income; both fall through to the rotation.
+    if (bot->GetPower(POWER_RAGE) < 200)
+        Cast(ai, "bloodrage", bot);
+    if (bot->GetPower(POWER_RAGE) < 300)
+        Cast(ai, "berserker rage", bot);
+
+    uint32 nearbyMelee = 0;
     {
-        if (Cast(ai, "death wish", bot))
-            return true;
-        if (Cast(ai, "recklessness", bot))
-            return true;
+        std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+        for (const ObjectGuid& guid : attackers)
+            if (Unit* attacker = ai->GetUnit(guid))
+                if (attacker->IsAlive() && bot->CanReachWithMeleeAttack(attacker))
+                    ++nearbyMelee;
     }
+
+    // death wish on real work, not just LLM burn calls (dungeons only see
+    // those on emergencies — the fury button rotted on cooldown)
+    bool eliteWork = !target->IsPlayer() && target->IsAlive() &&
+                     target->GetTypeId() == TYPEID_UNIT && ((Creature*)target)->IsElite();
+    if ((BurnPolicy(ai) || eliteWork || nearbyMelee >= 3) && Cast(ai, "death wish", bot))
+        return true;
+    if (BurnPolicy(ai) && Cast(ai, "recklessness", bot))
+        return true;
 
     if (target->IsPlayer() && !ai->HasAura("hamstring", target) && Cast(ai, "hamstring", target))
         return true;
@@ -2597,15 +2614,9 @@ bool PartyExecutor::FuryWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (Cast(ai, "bloodthirst", target))
         return true;
 
-    uint32 nearbyMelee = 0;
-    {
-        std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
-        for (const ObjectGuid& guid : attackers)
-            if (Unit* attacker = ai->GetUnit(guid))
-                if (attacker->IsAlive() && bot->CanReachWithMeleeAttack(attacker))
-                    ++nearbyMelee;
-    }
-    if (nearbyMelee >= 2 && Cast(ai, "whirlwind", target))
+    // whirlwind: packs always; single target only off a full bar (25 rage
+    // that would otherwise sit idle)
+    if ((nearbyMelee >= 2 || bot->GetPower(POWER_RAGE) > 500) && Cast(ai, "whirlwind", target))
         return true;
 
     // dump above 35 rage: keeps the next BT funded while spending the rest
