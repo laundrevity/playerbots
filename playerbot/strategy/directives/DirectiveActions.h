@@ -17,8 +17,9 @@ namespace ai
 
     // Executor-side consumption: pop -> parse -> validate against live game
     // state -> write the "directive" blackboard slot; accept/reject is
-    // instrumented via CombatEventLog ("directive" events) and, for
-    // script-sourced directives, whispered back to the master.
+    // instrumented via CombatEventLog ("directive" events). Interactive
+    // script directives are also whispered back to the master; local policy
+    // directives use an empty requester and stay quiet.
     class ApplyDirectiveAction : public Action
     {
     public:
@@ -26,7 +27,8 @@ namespace ai
         virtual bool Execute(Event& event) override;
 
     private:
-        void Report(const Directive& directive, bool accepted, const std::string& note);
+        void Report(const Directive& directive, bool accepted, const std::string& note,
+                    bool notifyScript);
     };
 
     // Mirror-mode stub brain: emits "keep attacking your current target" as a

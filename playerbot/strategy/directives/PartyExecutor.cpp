@@ -723,17 +723,15 @@ bool PartyExecutor::KeepPartyBuffed(PlayerbotAI* ai, Player* bot)
     return false;
 }
 
-// The tank WALKS POINT in a routed dungeon: the objective is the first
-// still-alive boss in encounters/party_routes.json order; he advances toward
-// it in mmap-path legs, pulls whatever stands in the way, and never outruns
-// the group. The master no longer steers — stopping out of leash range (or
-// saying "hold") is the human's brake.
+// The tank WALKS POINT in a routed dungeon by default. Sticky hold/steer pull
+// policies hand control back to the human before any route movement happens.
 bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
 {
     if (!IsTankBot(bot))
         return false;
-    if (HoldPolicy(ai))
-        return false;   // "hold" in party chat parks the tank
+    std::string pullPolicy = ai->GetAiObjectContext()->GetValue<std::string>("pull policy")->Get();
+    if (HoldPolicy(ai) || pullPolicy == "hold" || pullPolicy == "steer")
+        return false;
 
     Map* map = bot->GetMap();
     if (!map || !map->IsDungeon())
@@ -861,6 +859,7 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
     if (HoldPolicy(ai) || pullPolicy == "hold")
         return false;   // "stop pulling" in party chat parks the tank (sticky)
     bool fast = pullPolicy == "fast";
+    bool steer = pullPolicy == "steer";
 
     Player* master = ai->GetMaster();
     Group* group = bot->GetGroup();
@@ -917,9 +916,8 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
         return false;
 
     // next pack: nearest hostile in the master's heading cone. Fast mode
-    // ignores the cone (nearest pack, any direction); normal mode also takes
-    // anything close to the TANK himself — a pack on the path shouldn't wait
-    // for the healer's camera.
+    // ignores the cone. Normal route fallback also takes anything close to
+    // the tank; explicit steer mode is strict so the human's facing wins.
     float heading = master->GetOrientation();
     float hx = std::cos(heading), hy = std::sin(heading);
     std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
@@ -940,7 +938,7 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
         // inside the heading cone? (dot product against the facing vector)
         if (!fast && (dx * hx + dy * hy) / distance < 0.25f)   // cos(~75°)
         {
-            if (candidate->GetDistance(bot) > 20.0f)
+            if (steer || candidate->GetDistance(bot) > 20.0f)
                 continue;   // off-route and not near the tank either
         }
         best = distance;
@@ -1410,8 +1408,8 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         }
     }
 
-    // tank: skull/LLM pull orders first, then route the dungeon on your
-    // own; master-steered advance is the fallback outside routed maps
+    // tank: skull/LLM pull orders first, then route by default. Sticky steer
+    // bypasses RouteAdvance and uses the human-facing AutoAdvance path.
     if (TryChargePull(ai, bot))
         return;
     if (RouteAdvance(ai, bot))

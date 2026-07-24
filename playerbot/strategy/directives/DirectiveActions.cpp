@@ -50,13 +50,14 @@ bool BrainCommandAction::Execute(Event& event)
     return true;
 }
 
-void ApplyDirectiveAction::Report(const Directive& directive, bool accepted, const std::string& note)
+void ApplyDirectiveAction::Report(const Directive& directive, bool accepted, const std::string& note,
+                                  bool notifyScript)
 {
     sCombatEventLog.LogDirective(bot, directive.id.c_str(), DirectiveSourceTag(directive.src),
                                  accepted, note.c_str());
 
     // humans get whispered feedback; the stub stays silent (log only)
-    if (directive.src == DirectiveSource::Script)
+    if (directive.src == DirectiveSource::Script && notifyScript)
     {
         Player* master = GetMaster();
         if (master)
@@ -76,13 +77,14 @@ bool ApplyDirectiveAction::Execute(Event& event)
     PendingDirective pending;
     if (!sDirectiveMgr.Pop(bot->GetObjectGuid(), pending))
         return false;
+    bool notifyScript = bool(pending.requester);
 
     Directive incoming;
     std::string error;
     if (!ParseDirective(pending.json, incoming, error))
     {
         incoming.src = pending.source;
-        Report(incoming, false, error);
+        Report(incoming, false, error, notifyScript);
         return false;
     }
 
@@ -128,7 +130,7 @@ bool ApplyDirectiveAction::Execute(Event& event)
 
     if (!incoming.requestedKillOrder.empty() && incoming.killOrder.empty())
     {
-        Report(incoming, false, "no valid kill-order targets");
+        Report(incoming, false, "no valid kill-order targets", notifyScript);
         return false;
     }
 
@@ -262,7 +264,7 @@ bool ApplyDirectiveAction::Execute(Event& event)
                           bot->GetName(), incoming.useSpell.c_str());
     }
 
-    Report(incoming, true, note);
+    Report(incoming, true, note, notifyScript);
     return true;
 }
 

@@ -61,10 +61,12 @@ namespace
         "aggro), paladin = lay on hands to save a dying ally, hunter = feign death, druid = "
         "barkskin, mage = ice block. Only a spell that bot's class has.\n"
         "- use fires ONCE, immediately — omit it unless the moment needs it RIGHT NOW.\n"
-        "- pulling goes on the TANK's directive and STICKS until changed: hold = park "
-        "('stop pulling', 'hold', 'afk', 'brb', 'need mana'), fast = chain-pull with looser "
-        "hp/mana waits ('pull faster', 'go go go', 'speed up'), normal = default pacing "
-        "('resume', 'pull again', 'go'). Acknowledge the change in the reply.\n"
+        "- pulling goes on the TANK's directive and STICKS until changed: hold = park/follow "
+        "without pulling ('stop pulling', 'hold', 'afk', 'brb', 'need mana'); steer = bypass "
+        "the boss route and pull strictly where the human faces ('wrong way', 'turn around', "
+        "'this way', 'follow me', 'let me lead'); fast = chain-pull with looser hp/mana waits; "
+        "normal = resume the configured boss route. Never claim a direction change without "
+        "setting pulling=steer. Acknowledge the change in the reply.\n"
         "- reply: ONE short casual party-chat answer, like a terse guildmate (max 12 words, "
         "no roleplay flourishes, no emoji).";
 
@@ -78,6 +80,73 @@ namespace
             ++b;
         }
         return !*a && !*b;
+    }
+
+    struct LocalPullIntent
+    {
+        const char* policy = nullptr;
+        const char* reply = nullptr;
+    };
+
+    LocalPullIntent ParseLocalPullIntent(const std::string& text)
+    {
+        std::string lower;
+        lower.reserve(text.size());
+        for (char c : text)
+            lower += char(std::tolower(static_cast<unsigned char>(c)));
+
+        auto has = [&lower](const char* phrase) {
+            return lower.find(phrase) != std::string::npos;
+        };
+
+        if (has("wrong way") || has("other way") || has("turn around") ||
+            has("this way") || has("follow me") || has("follow my lead") ||
+            has("let me lead") || has("not crusader") || has("tank steer"))
+            return {"steer", "Following your lead."};
+
+        if (has("come back") || has("tank hold"))
+            return {"hold", "Coming back and holding."};
+
+        if (has("resume route") || has("take point") || has("you lead") ||
+            has("tank route") || has("route on"))
+            return {"normal", "Taking the route again."};
+
+        return {};
+    }
+
+    bool DispatchLocalPullIntent(Player* master, const std::string& text, uint32 now)
+    {
+        LocalPullIntent intent = ParseLocalPullIntent(text);
+        Group* group = master ? master->GetGroup() : nullptr;
+        if (!intent.policy || !group)
+            return false;
+
+        uint32 dispatched = 0;
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (!member || !member->IsInWorld() || !member->GetPlayerbotAI())
+                continue;
+
+            json directive = {
+                {"v", 0},
+                {"id", "local-pull-" + std::to_string(now) + "-" + std::to_string(dispatched)},
+                {"src", "script"},
+                {"ttl_ms", 1500},
+                {"kill_order", json::array()},
+                {"pulling", intent.policy},
+            };
+            if (dispatched == 0)
+                directive["chat"] = {{"say", intent.reply}};
+            sDirectiveMgr.Push(member->GetObjectGuid(), directive.dump(), DirectiveSource::Script,
+                               ObjectGuid());
+            ++dispatched;
+        }
+
+        if (dispatched)
+            sLog.outBasic("ShotCaller: local pull intent '%s' -> %u directive(s)",
+                          intent.policy, dispatched);
+        return dispatched != 0;
     }
 
     std::string ClassName(uint8 cls)
@@ -128,7 +197,7 @@ namespace
                                              "vanish", "feign death", "divine protection", "divine shield",
                                              "lay on hands", "barkskin", "frenzied regeneration", "ice block"})}}},
               {"cooldowns", {{"type", "string"}, {"enum", json::array({"hold", "normal", "burn"})}}},
-              {"pulling", {{"type", "string"}, {"enum", json::array({"hold", "normal", "fast"})}}},
+              {"pulling", {{"type", "string"}, {"enum", json::array({"hold", "normal", "fast", "steer"})}}},
               {"cc",
                {{"type", "array"},
                 {"items",
@@ -169,6 +238,12 @@ void ShotCaller::OnPartyChat(Player* master, uint32 type, const std::string& tex
     m_lastMaster = master->GetObjectGuid();
     m_lastText = text;
     m_lastMs = now;
+
+    // Navigation is a control-plane action, so common phrases take a fast,
+    // deterministic path and cannot be lost to inference latency or schema
+    // failure. The generated directives still use the same validated seam.
+    if (DispatchLocalPullIntent(master, text, now))
+        return;
 
     Submit(master, text, false);
 }

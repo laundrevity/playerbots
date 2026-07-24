@@ -27,9 +27,9 @@ namespace ai
             : ManualSetValue<std::string>(ai, "", name) {}
     };
 
-    // Sticky pull pacing for the tank: "" (normal), "hold", or "fast". Set by
-    // the pulling directive verb; deliberately outlives the directive TTL —
-    // "stop pulling" means until countermanded, not for six seconds.
+    // Sticky pull control for the tank: "" (normal route), "hold", "fast", or
+    // "steer" (strict human-facing pulls). Set by the pulling directive verb;
+    // deliberately outlives the directive TTL.
     class PullPolicyValue : public ManualSetValue<std::string>
     {
     public:
