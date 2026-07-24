@@ -17,8 +17,10 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <iomanip>
 #include <sstream>
 
 using namespace ai;
@@ -37,7 +39,8 @@ namespace
         "alongside one human. You receive the fight state and the human's party chat line, and "
         "you emit directives (desires with a TTL, the executor validates them) for the bots.\n"
         "Rules:\n"
-        "- kill_order entries must COPY names EXACTLY from the visible target list. Never invent names.\n"
+        "- kill_order and cc targets use candidate_id values from the visible target list. "
+        "Never invent an ID; use an empty kill_order when no listed target fits.\n"
         "- Obey the human's chat above everything else; otherwise apply real TBC judgment "
         "(dangerous totems and healers die first, a mob on the healer is an emergency for the tank, "
         "never pull a patrolling boss into an add fight, execute phase = burn).\n"
@@ -187,21 +190,35 @@ namespace
         return (botAi && botAi->IsRanged(bot)) ? "RANGED DPS" : "MELEE DPS";
     }
 
-    json ResponseSchema()
+    json ResponseSchema(const std::vector<std::string>& botNames,
+                        const std::vector<std::string>& targetIds,
+                        const std::vector<std::string>& partyNames)
     {
-        json target = {{"type", "object"},
-                       {"properties", {{"name", {{"type", "string"}}}}},
-                       {"required", json::array({"name"})}};
+        std::vector<std::string> boundedTargets = targetIds;
+        if (boundedTargets.empty())
+            boundedTargets.push_back("no-targets-available");
+        json target = {
+            {"type", "object"},
+            {"properties",
+             {{"candidate_id", {{"type", "string"}, {"enum", boundedTargets}}}}},
+            {"required", json::array({"candidate_id"})},
+        };
+        json partyTarget = {
+            {"type", "object"},
+            {"properties",
+             {{"name", {{"type", "string"}, {"enum", partyNames}}}}},
+            {"required", json::array({"name"})},
+        };
         json directive = {
             {"type", "object"},
             {"properties",
-             {{"bot", {{"type", "string"}}},
-              {"kill_order", {{"type", "array"}, {"items", target}}},
-              {"give_healthstone_to", {{"type", "string"}}},
+             {{"bot", {{"type", "string"}, {"enum", botNames}}},
+              {"kill_order", {{"type", "array"}, {"items", target}, {"maxItems", 4}}},
+              {"give_healthstone_to", {{"type", "string"}, {"enum", partyNames}}},
               {"blessing",
                {{"type", "object"},
                 {"properties",
-                 {{"target", target},
+                 {{"target", partyTarget},
                   {"spell", {{"type", "string"},
                              {"enum", json::array({"kings", "might", "wisdom", "light", "salvation", "sanctuary"})}}}}},
                 {"required", json::array({"target", "spell"})}}},
@@ -391,6 +408,7 @@ void ShotCaller::Submit(Player* master, const std::string& text, bool synthetic)
     // ---- snapshot on the world thread: strings only cross to the worker ----
     Job job;
     job.masterName = master->GetName();
+    job.partyNames.push_back(job.masterName);
 
     std::ostringstream roster;
     std::vector<Player*> bots;
@@ -399,6 +417,9 @@ void ShotCaller::Submit(Player* master, const std::string& text, bool synthetic)
         Player* member = itr->getSource();
         if (!member || !member->IsInWorld())
             continue;
+        if (std::find(job.partyNames.begin(), job.partyNames.end(), member->GetName()) ==
+            job.partyNames.end())
+            job.partyNames.push_back(member->GetName());
         if (!member->GetPlayerbotAI())
             continue;   // humans are not directed
         bots.push_back(member);
@@ -425,11 +446,14 @@ void ShotCaller::Submit(Player* master, const std::string& text, bool synthetic)
                 break;
             if (std::find(seen.begin(), seen.end(), guid) != seen.end())
                 continue;
-            seen.push_back(guid);
             Unit* unit = bot->GetPlayerbotAI()->GetUnit(guid);
             if (!unit || !unit->IsAlive())
                 continue;
-            targets << unit->GetName() << " (" << uint32(unit->GetHealthPercent()) << "% hp";
+            seen.push_back(guid);
+            std::string id = "t" + std::to_string(count);
+            job.targets.push_back({id, guid, unit->GetName()});
+            targets << id << " | " << unit->GetName() << " ("
+                    << uint32(unit->GetHealthPercent()) << "% hp";
             for (int icon = 0; icon < 8; ++icon)
                 if (ObjectGuid(group->GetTargetIcon(icon)) == guid)
                     targets << ", marked " << MARK_NAMES[icon];
@@ -489,12 +513,22 @@ void ShotCaller::WorkerLoop()
 
 void ShotCaller::ProcessJob(const Job& job)
 {
+    std::vector<std::string> botNames;
+    for (const auto& bot : job.bots)
+        botNames.push_back(bot.second);
+    std::vector<std::string> targetIds;
+    for (const TargetCandidate& target : job.targets)
+        targetIds.push_back(target.id);
+
     json body = {
         {"messages",
          {{{"role", "system"}, {"content", SYSTEM_PROMPT}},
           {{"role", "user"}, {"content", job.userPrompt}}}},
         {"response_format",
-         {{"type", "json_schema"}, {"json_schema", {{"name", "shotcall"}, {"schema", ResponseSchema()}}}}},
+         {{"type", "json_schema"},
+          {"json_schema",
+           {{"name", "shotcall"},
+            {"schema", ResponseSchema(botNames, targetIds, job.partyNames)}}}}},
         {"max_tokens", 400},
         {"temperature", 0.3},
         {"top_p", 0.8},
@@ -534,7 +568,25 @@ void ShotCaller::ProcessJob(const Job& job)
         if (static_cast<unsigned char>(c) < 0x20)
             c = ' ';
 
+    auto resolveTarget = [&job](const json& target, json& resolved) {
+        if (!target.is_object())
+            return false;
+        std::string id = target.value("candidate_id", "");
+        for (const TargetCandidate& candidate : job.targets)
+        {
+            if (candidate.id != id)
+                continue;
+            std::ostringstream guid;
+            guid << "0x" << std::hex << candidate.guid.GetRawValue();
+            resolved = {{"guid", guid.str()}, {"name", candidate.name}};
+            return true;
+        }
+        return false;
+    };
+
     uint32 dispatched = 0;
+    uint32 mappedTargets = 0;
+    uint32 rejectedTargets = 0;
     for (const json& entry : content["directives"])
     {
         if (!entry.is_object() || !entry.contains("bot"))
@@ -550,12 +602,25 @@ void ShotCaller::ProcessJob(const Job& job)
             continue;
         }
 
+        json killOrder = json::array();
+        for (const json& requested : entry.value("kill_order", json::array()))
+        {
+            json resolved;
+            if (resolveTarget(requested, resolved))
+            {
+                killOrder.push_back(resolved);
+                ++mappedTargets;
+            }
+            else
+                ++rejectedTargets;
+        }
+
         json directive = {
             {"v", 0},
             {"id", "llm-" + std::to_string(WorldTimer::getMSTime()) + "-" + std::to_string(dispatched)},
             {"src", "llm"},
             {"ttl_ms", DIRECTIVE_TTL_MS},
-            {"kill_order", entry.value("kill_order", json::array())},
+            {"kill_order", killOrder},
             {"cooldowns", entry.value("cooldowns", "normal")},
         };
         if (entry.contains("give_healthstone_to") && entry["give_healthstone_to"].is_string() &&
@@ -573,8 +638,26 @@ void ShotCaller::ProcessJob(const Job& job)
         if (entry.contains("come_to_me") && entry["come_to_me"].is_boolean() &&
             entry["come_to_me"].get<bool>())
             directive["come_to_me"] = true;
-        if (entry.contains("cc"))
-            directive["cc"] = entry["cc"];
+        if (entry.contains("cc") && entry["cc"].is_array())
+        {
+            json cc = json::array();
+            for (const json& assignment : entry["cc"])
+            {
+                if (!assignment.is_object() || !assignment.contains("target"))
+                    continue;
+                json resolved;
+                if (!resolveTarget(assignment["target"], resolved))
+                {
+                    ++rejectedTargets;
+                    continue;
+                }
+                json mapped = assignment;
+                mapped["target"] = resolved;
+                cc.push_back(mapped);
+                ++mappedTargets;
+            }
+            directive["cc"] = cc;
+        }
         if (dispatched == 0 && !reply.empty())
             directive["chat"] = {{"say", reply}};
 
@@ -582,8 +665,9 @@ void ShotCaller::ProcessJob(const Job& job)
         ++dispatched;
     }
 
-    sLog.outBasic("ShotCaller: '%s' -> %u directive(s), reply='%s', %ums",
-                  job.masterName.c_str(), dispatched, reply.c_str(), latency);
+    sLog.outBasic("ShotCaller: '%s' candidates=%u mapped=%u rejected=%u -> %u directive(s), reply='%s', %ums",
+                  job.masterName.c_str(), uint32(job.targets.size()), mappedTargets,
+                  rejectedTargets, dispatched, reply.c_str(), latency);
 }
 
 std::string ShotCaller::HttpPostLocal(const std::string& host, uint32 port, const std::string& path,

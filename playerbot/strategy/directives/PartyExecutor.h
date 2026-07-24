@@ -44,7 +44,7 @@ namespace ai
 
         // append-only structured movement-decision telemetry (survives
         // Server.log truncation); reason: route|route-pull|auto-pull|gather|
-        // rescue|come|come-done|come-timeout|route-cancel
+        // gather-blocked|rescue|come|come-done|come-timeout|route-cancel
         static void LogMovementDecision(PlayerbotAI* ai, Player* bot, const char* reason,
                                         const char* detail, Unit* target);
         // stop an in-flight route spline / point move (steer|hold|fast|come)

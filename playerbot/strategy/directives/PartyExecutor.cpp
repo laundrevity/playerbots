@@ -35,6 +35,7 @@
 #include <vector>
 
 using namespace ai;
+using nlohmann::json;
 
 namespace
 {
@@ -208,6 +209,110 @@ namespace
         return false;
     }
 
+    // Structured, append-only threat evidence for each tank-held engagement.
+    // This records the actual core threat values rather than inferring tank
+    // coverage from victims or combat-log damage.
+    void LogThreatCoverage(PlayerbotAI* ai, Player* tank, const char* reason)
+    {
+        Group* group = tank->GetGroup();
+        if (!group)
+            return;
+
+        std::vector<Unit*> engaged;
+        CollectGroupEngagement(ai, tank, engaged);
+
+        uint32 tankVictims = 0;
+        uint32 covered = 0;
+        uint32 inMelee = 0;
+        uint32 zeroTankThreat = 0;
+        json mobs = json::array();
+        for (Unit* mob : engaged)
+        {
+            if (!mob->CanHaveThreatList())
+                continue;
+
+            float tankThreat = mob->getThreatManager().getThreat(tank);
+            float totalGroupThreat = 0.0f;
+            float highestOtherThreat = 0.0f;
+            std::string highestOtherName;
+            for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                Player* member = itr->getSource();
+                if (!member || !member->IsInWorld() ||
+                    member->GetMapId() != tank->GetMapId())
+                    continue;
+                float threat = mob->getThreatManager().getThreat(member);
+                totalGroupThreat += threat;
+                if (member != tank && threat > highestOtherThreat)
+                {
+                    highestOtherThreat = threat;
+                    highestOtherName = member->GetName();
+                }
+            }
+
+            Unit* victim = mob->GetVictim();
+            bool owned = victim == tank;
+            bool melee = tank->CanReachWithMeleeAttack(mob);
+            bool threatCovered = tankThreat > 0.0f &&
+                                 (highestOtherThreat <= 0.0f ||
+                                  tankThreat >= highestOtherThreat * THREAT_CEILING);
+            tankVictims += owned ? 1 : 0;
+            covered += threatCovered ? 1 : 0;
+            inMelee += melee ? 1 : 0;
+            zeroTankThreat += tankThreat <= 0.0f ? 1 : 0;
+
+            json row = {
+                {"guid", mob->GetObjectGuid().GetRawValue()},
+                {"name", mob->GetName()},
+                {"victim", victim ? victim->GetName() : ""},
+                {"tank_threat", tankThreat},
+                {"highest_other", highestOtherName},
+                {"highest_other_threat", highestOtherThreat},
+                {"tank_headroom", tankThreat - highestOtherThreat},
+                {"tank_share", totalGroupThreat > 0.0f ? tankThreat / totalGroupThreat : 0.0f},
+                {"distance", sServerFacade.GetDistance2d(tank, mob)},
+                {"in_melee", melee},
+                {"owned", owned},
+                {"covered", threatCovered},
+            };
+            mobs.push_back(row);
+        }
+
+        Player* master = ai->GetMaster();
+        json summary = {
+            {"engaged", mobs.size()},
+            {"tank_victims", tankVictims},
+            {"threat_covered", covered},
+            {"in_melee", inMelee},
+            {"zero_tank_threat", zeroTankThreat},
+        };
+        if (master && master->IsInWorld() && master->GetMapId() == tank->GetMapId())
+            summary["master_distance"] = tank->GetDistance(master);
+
+        json snapshot = {
+            {"t", uint64(std::time(nullptr))},
+            {"ms", WorldTimer::getMSTime()},
+            {"tank", tank->GetName()},
+            {"reason", reason ? reason : "periodic"},
+            {"summary", summary},
+            {"mobs", mobs},
+        };
+
+        static std::mutex s_threatMutex;
+        static std::ofstream s_threatLog;
+        std::lock_guard<std::mutex> lock(s_threatMutex);
+        if (!s_threatLog.is_open())
+        {
+            s_threatLog.open("../logs/threat_coverage.jsonl", std::ios::app);
+            if (!s_threatLog.is_open())
+                s_threatLog.open("threat_coverage.jsonl", std::ios::app);
+            if (!s_threatLog.is_open())
+                return;
+        }
+        s_threatLog << snapshot.dump() << "\n";
+        s_threatLog.flush();
+    }
+
     // rogue poison upkeep (DB-verified 2.4.3 top ranks)
     constexpr uint32 INSTANT_POISON_VII = 21927;    // -> enchant 2641 (MH)
     constexpr uint32 DEADLY_POISON_VII = 22054;     // -> enchant 2643 (OH)
@@ -361,11 +466,13 @@ namespace
                 st.count[c] = 0;        // bracket reset after the fade window
         }
         if (s_drStates.size() > 128)    // hygiene: forget long-gone victims
+        {
             for (auto itr = s_drStates.begin(); itr != s_drStates.end();)
                 if (itr->second.observed + 300 < now)
                     itr = s_drStates.erase(itr);
                 else
                     ++itr;
+        }
     }
 
     uint8 DrLevel(Unit* victim, DrCategory cat)
@@ -2256,6 +2363,17 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
             if (bot->CanReachWithMeleeAttack(attacker))
                 ++meleeCount;
 
+    {
+        static std::map<uint32, uint32> lastThreatSnapshot;
+        uint32 nowMs = WorldTimer::getMSTime();
+        uint32& last = lastThreatSnapshot[bot->GetObjectGuid().GetCounter()];
+        if (!last || nowMs - last >= 5000)
+        {
+            last = nowMs;
+            LogThreatCoverage(ai, bot, "periodic");
+        }
+    }
+
     // the HUMAN being hit is the emergency: taunt that mob off them before
     // any other priority ("tank ignores me pulling aggro")
     if (Player* master = ai->GetMaster())
@@ -2316,6 +2434,7 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
                             snprintf(snapshot, sizeof(snapshot), "swarm=%u melee=%u", swarm, meleeCount);
                             LogMovementDecision(ai, bot, "rescue", snapshot, anchor);
                         }
+                        LogThreatCoverage(ai, bot, "rescue");
                         bot->GetMotionMaster()->MovePoint(0, anchor->GetPositionX(),
                             anchor->GetPositionY(), anchor->GetPositionZ(), FORCED_MOVEMENT_RUN);
                     }
@@ -2323,6 +2442,8 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
                 }
                 // formed pack held: fall through to local answers (shout,
                 // sunder ledger) instead of dragging the anchor
+                if (!swarm)
+                    LogThreatCoverage(ai, bot, "rescue-blocked-formed-pack");
             }
             if (swarm && Cast(ai, "challenging shout", bot))
             {
@@ -2402,18 +2523,36 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
             if (pick)
             {
                 last = nowMs;
-                sLog.outBasic("TankGather: %s -> %s (dist %.0f, melee train %u)",
-                              bot->GetName(), pick->GetName(),
-                              sServerFacade.GetDistance2d(bot, pick), meleeCount);
+                Player* master = ai->GetMaster();
+                bool beyondMasterLeash =
+                    master && master->IsInWorld() &&
+                    master->GetMapId() == bot->GetMapId() &&
+                    bot->GetDistance(master) > ROUTE_LEASH;
+                if (beyondMasterLeash)
                 {
-                    char snapshot[64];
-                    snprintf(snapshot, sizeof(snapshot), "melee=%u attackers=%u",
-                             meleeCount, uint32(attackers.size()));
-                    LogMovementDecision(ai, bot, "gather", snapshot, pick);
+                    sLog.outBasic("TankGather: %s blocked beyond %.0fy master leash (master %.0fy, candidate %s)",
+                                  bot->GetName(), ROUTE_LEASH,
+                                  bot->GetDistance(master), pick->GetName());
+                    LogMovementDecision(ai, bot, "gather-blocked", "master-leash", master);
+                    LogThreatCoverage(ai, bot, "gather-blocked-master-leash");
+                    // Keep processing the local tank rotation below.
                 }
-                bot->GetMotionMaster()->MovePoint(0, pick->GetPositionX(),
-                    pick->GetPositionY(), pick->GetPositionZ(), FORCED_MOVEMENT_RUN);
-                return true;
+                else
+                {
+                    sLog.outBasic("TankGather: %s -> %s (dist %.0f, melee train %u)",
+                                  bot->GetName(), pick->GetName(),
+                                  sServerFacade.GetDistance2d(bot, pick), meleeCount);
+                    {
+                        char snapshot[64];
+                        snprintf(snapshot, sizeof(snapshot), "melee=%u attackers=%u",
+                                 meleeCount, uint32(attackers.size()));
+                        LogMovementDecision(ai, bot, "gather", snapshot, pick);
+                    }
+                    LogThreatCoverage(ai, bot, "gather");
+                    bot->GetMotionMaster()->MovePoint(0, pick->GetPositionX(),
+                        pick->GetPositionY(), pick->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                    return true;
+                }
             }
             if (bot->IsInCombat())
             {

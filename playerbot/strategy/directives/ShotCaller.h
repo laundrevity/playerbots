@@ -48,10 +48,19 @@ namespace ai
 
         void Submit(Player* master, const std::string& line, bool synthetic);
 
+        struct TargetCandidate
+        {
+            std::string id;
+            ObjectGuid guid;
+            std::string name;
+        };
+
         struct Job
         {
             std::string userPrompt;
             std::vector<std::pair<ObjectGuid, std::string>> bots;   // guid, name
+            std::vector<std::string> partyNames;
+            std::vector<TargetCandidate> targets;
             std::string masterName;
         };
 
