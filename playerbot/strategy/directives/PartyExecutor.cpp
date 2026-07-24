@@ -1273,46 +1273,6 @@ bool PartyExecutor::EleShamanTick(PlayerbotAI* ai, Player* bot, Unit* target)
         return true;
     }
 
-    // dungeon packs: Blizzard beats single-target once the tank has a pile
-    // (Strat runs were pure Frostbolt into 4-mob pulls). Gates loosened from
-    // 4+/50% after the meter showed zero Blizzards across whole runs.
-    if (!target->IsPlayer() && target->GetVictim() && target->GetVictim() != bot)
-    {
-        // count from ATTACKERS, not "possible targets" — the latter came up
-        // empty all night (MagePack never even logged packed=2) while the
-        // tank's attackers list saw the same pulls at 3-4
-        uint32 packed = 0;
-        std::list<ObjectGuid> hostiles = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
-        for (const ObjectGuid& guid : hostiles)
-            if (Unit* mob = ai->GetUnit(guid))
-                if (!mob->IsPlayer() && mob->IsAlive() &&
-                    mob->GetDistance(target) < 10.0f)
-                    ++packed;
-        if (target->IsAlive() && !target->IsPlayer())
-            packed = packed > 0 ? packed : 1;   // target itself counts
-        uint32 maxMana = bot->GetMaxPower(POWER_MANA);
-        // pack telemetry: zero Blizzards in three metered runs and no probe
-        // said why — report the clump size the mage actually sees
-        {
-            static std::map<uint32, uint32> lastPack;
-            uint32 nowMs = WorldTimer::getMSTime();
-            uint32& last = lastPack[bot->GetObjectGuid().GetCounter()];
-            if (packed >= 2 && (!last || nowMs - last > 10000))
-            {
-                last = nowMs;
-                sLog.outBasic("MagePack: %s sees packed=%u near %s", bot->GetName(), packed,
-                              target->GetName());
-            }
-        }
-        if (packed >= 3 && maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 30)
-        {
-            if (Cast(ai, "blizzard", target))
-                return true;
-            // dest-targeted cast refused? name it so we know to re-plumb
-            DpsIdleProbe(ai, bot, "blizzard-failed");
-        }
-    }
-
     if ((BurnPolicy(ai) || ArenaBurstWindow(ai, bot, target)) && Cast(ai, "elemental mastery", bot))
         return true;
 
@@ -2110,6 +2070,43 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
             }
             if (!ccInRadius && Cast(ai, "frost nova", bot))
                 return true;
+        }
+    }
+
+    // dungeon packs: Blizzard beats single-target once the tank has a pile
+    // (Strat runs were pure Frostbolt into 4-mob pulls). NB this block spent
+    // three tuning rounds inside EleShamanTick by mistake — every "mage still
+    // not AoEing" report was this. Count from ATTACKERS, not "possible
+    // targets" (the latter came up empty all night).
+    if (!target->IsPlayer() && target->GetVictim() && target->GetVictim() != bot)
+    {
+        uint32 packed = 0;
+        std::list<ObjectGuid> hostiles = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+        for (const ObjectGuid& guid : hostiles)
+            if (Unit* mob = ai->GetUnit(guid))
+                if (!mob->IsPlayer() && mob->IsAlive() &&
+                    mob->GetDistance(target) < 10.0f)
+                    ++packed;
+        if (target->IsAlive() && !target->IsPlayer())
+            packed = packed > 0 ? packed : 1;   // target itself counts
+        uint32 maxMana = bot->GetMaxPower(POWER_MANA);
+        {
+            static std::map<uint32, uint32> lastPack;
+            uint32 nowMs = WorldTimer::getMSTime();
+            uint32& last = lastPack[bot->GetObjectGuid().GetCounter()];
+            if (packed >= 2 && (!last || nowMs - last > 10000))
+            {
+                last = nowMs;
+                sLog.outBasic("MagePack: %s sees packed=%u near %s", bot->GetName(), packed,
+                              target->GetName());
+            }
+        }
+        if (packed >= 3 && maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 30)
+        {
+            if (Cast(ai, "blizzard", target))
+                return true;
+            // dest-targeted cast refused? name it so we know to re-plumb
+            DpsIdleProbe(ai, bot, "blizzard-failed");
         }
     }
 
