@@ -3019,6 +3019,17 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
         return;
     }
 
+    // mages and druids own curse removal (vanilla decurse-or-die design) —
+    // in combat only healers ran DispelPartyTick, so the mage never
+    // decursed. Cheap no-op when nobody's cursed; runs before dps logic so
+    // even a threat-capped mage cleans the party.
+    if ((bot->getClass() == CLASS_MAGE || bot->getClass() == CLASS_DRUID) &&
+        DispelPartyTick(ai, bot))
+    {
+        ai->SetAIInternalUpdateDelay(AFTER_CAST_DELAY_MS);
+        return;
+    }
+
     // 1. standing cc duty from the seam
     if (KeepCcApplied(ai, bot))
     {
