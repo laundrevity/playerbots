@@ -1286,6 +1286,19 @@ bool PartyExecutor::EleShamanTick(PlayerbotAI* ai, Player* bot, Unit* target)
                     mob->GetDistance(target) < 10.0f)
                     ++packed;
         uint32 maxMana = bot->GetMaxPower(POWER_MANA);
+        // pack telemetry: zero Blizzards in three metered runs and no probe
+        // said why — report the clump size the mage actually sees
+        {
+            static std::map<uint32, uint32> lastPack;
+            uint32 nowMs = WorldTimer::getMSTime();
+            uint32& last = lastPack[bot->GetObjectGuid().GetCounter()];
+            if (packed >= 2 && (!last || nowMs - last > 10000))
+            {
+                last = nowMs;
+                sLog.outBasic("MagePack: %s sees packed=%u near %s", bot->GetName(), packed,
+                              target->GetName());
+            }
+        }
         if (packed >= 3 && maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 30)
         {
             if (Cast(ai, "blizzard", target))
@@ -1734,12 +1747,16 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
                 ++meleeCount;
 
     // pack gathering: casters won't walk to the tank, so the tank walks TO
-    // the caster, dragging his melee train into one AoE-able clump
+    // the caster, dragging his melee train into one AoE-able clump.
+    // Probed: was never observed firing in two full runs.
     {
         static std::map<uint32, uint32> lastGather;
         uint32 nowMs = WorldTimer::getMSTime();
         uint32& last = lastGather[bot->GetObjectGuid().GetCounter()];
         if ((!last || nowMs - last > 6000) && meleeCount >= 1)
+        {
+            Unit* pick = nullptr;
+            uint32 candidates = 0;
             for (const ObjectGuid& guid : attackers)
                 if (Unit* caster = ai->GetUnit(guid))
                     if (caster->IsAlive() && !caster->IsPlayer() &&
@@ -1748,11 +1765,27 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
                         sServerFacade.GetDistance2d(bot, caster) < 30.0f &&
                         !IsSoftCrowdControlled(ai, caster))
                     {
-                        last = nowMs;
-                        bot->GetMotionMaster()->MovePoint(0, caster->GetPositionX(),
-                            caster->GetPositionY(), caster->GetPositionZ(), FORCED_MOVEMENT_RUN);
-                        return true;
+                        ++candidates;
+                        if (!pick)
+                            pick = caster;
                     }
+            if (pick)
+            {
+                last = nowMs;
+                sLog.outBasic("TankGather: %s -> %s (dist %.0f, melee train %u)",
+                              bot->GetName(), pick->GetName(),
+                              sServerFacade.GetDistance2d(bot, pick), meleeCount);
+                bot->GetMotionMaster()->MovePoint(0, pick->GetPositionX(),
+                    pick->GetPositionY(), pick->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                return true;
+            }
+            if (bot->IsInCombat())
+            {
+                last = nowMs;   // reuse throttle for the negative report
+                sLog.outBasic("TankGather: %s no caster candidate (melee=%u attackers=%u)",
+                              bot->GetName(), meleeCount, uint32(attackers.size()));
+            }
+        }
     }
 
     // vanilla AoE threat is TAB-SUNDER: a loose melee mob gets a sunder
