@@ -943,6 +943,20 @@ bool PartyExecutor::FollowLeader(PlayerbotAI* ai, Player* bot)
 
 void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
 {
+    // nobody ever walks: a stray MOVEFLAG_WALK from any earlier strategy
+    // sticks forever and the bot ambles behind the party ("mage is walking")
+    if (bot->IsWalking())
+        bot->m_movementInfo.RemoveMovementFlag(MOVEFLAG_WALK_MODE);
+
+    // never yank a drinking/eating bot into follow — the aura cancels on
+    // movement and the mana never comes back
+    if ((ai->HasAura("drink", bot) && bot->GetPower(POWER_MANA) < bot->GetMaxPower(POWER_MANA)) ||
+        (ai->HasAura("food", bot) && bot->GetHealth() < bot->GetMaxHealth()))
+    {
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return;
+    }
+
     // never trample an in-progress cast OR channel: conjures take 3s,
     // summons 10s, evocation channels 8s — the fall-through to FollowLeader
     // was cancelling them with movement every tick
@@ -1005,8 +1019,10 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         Cast(ai, "evocation", bot))
         return;
 
-    // upkeep between pulls (humans drink; bots that never drink are a tell)
-    if (bot->GetPowerType() == POWER_MANA && bot->GetPower(POWER_MANA) * 2 < bot->GetMaxPower(POWER_MANA))
+    // upkeep between pulls (humans drink; bots that never drink are a tell).
+    // 60% trigger: at 50% the tank's ready-check (also 50%) could pull the
+    // moment before the sit — the mage entered fights at half mana.
+    if (bot->GetPowerType() == POWER_MANA && bot->GetPower(POWER_MANA) * 10 < bot->GetMaxPower(POWER_MANA) * 6)
         if (ai->DoSpecificAction("drink", Event(), true))
             return;
     if (bot->GetHealth() * 2 < bot->GetMaxHealth())
@@ -3062,6 +3078,11 @@ bool PartyExecutor::RestoShamanTick(PlayerbotAI* ai, Player* bot)
 
 void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
 {
+    // nobody ever walks (see NonCombatTick — the flag sticks from strategy
+    // leftovers and slows every chase/reposition too)
+    if (bot->IsWalking())
+        bot->m_movementInfo.RemoveMovementFlag(MOVEFLAG_WALK_MODE);
+
     // 0. break hard cc with the pvp medallion (action self-gates: only
     // fires while stunned/feared/charmed/confused and off cooldown)
     if (ai->DoSpecificAction("use pvp trinket", Event(), true))
