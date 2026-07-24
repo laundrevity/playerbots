@@ -1606,9 +1606,14 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
             Player* master = ai->GetMaster();
             std::map<ObjectGuid, uint32> perVictim;
             for (const ObjectGuid& guid : attackers)
-                if (Unit* mob = ai->GetUnit(guid))
-                    if (mob->IsAlive() && mob->GetVictim() && mob->GetVictim()->IsPlayer())
-                        ++perVictim[mob->GetVictim()->GetObjectGuid()];
+            {
+                Unit* mob = ai->GetUnit(guid);
+                if (!mob || !mob->IsAlive() || !mob->GetVictim() || !mob->GetVictim()->IsPlayer())
+                    continue;
+                Player* victim = (Player*)mob->GetVictim();
+                if (victim->GetGroup() == group)
+                    ++perVictim[victim->GetObjectGuid()];
+            }
             Unit* menace = nullptr;
             float best = 1000.0f;
             bool bestProtectee = false;
@@ -1620,10 +1625,13 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
                 Unit* victim = mob->GetVictim();
                 if (!victim || !victim->IsPlayer() || victim == bot)
                     continue;
-                bool protectee = (master && victim == master) ||
-                                 PlayerbotAI::IsHeal((Player*)victim);
+                Player* member = (Player*)victim;
+                if (member->GetGroup() != group)
+                    continue;
+                bool protectee = (master && member == master) ||
+                                 PlayerbotAI::IsHeal(member);
                 bool swarmed = perVictim[victim->GetObjectGuid()] >= 2 &&
-                               !IsTankBot((Player*)victim);
+                               !IsTankBot(member);
                 if (!protectee && !swarmed)
                     continue;
                 float distance = sServerFacade.GetDistance2d(bot, mob);
@@ -1694,8 +1702,17 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
                 {
                     float tankDist = sServerFacade.GetDistance2d(member, nearest);
                     if (tankDist > 30.0f)
-                        sLog.outBasic("DpsRoam: %s target %s is %.0fy from tank %s",
-                                      bot->GetName(), nearest->GetName(), tankDist, member->GetName());
+                    {
+                        static std::map<uint32, uint32> lastRoamLog;
+                        uint32 nowMs = WorldTimer::getMSTime();
+                        uint32& lastMs = lastRoamLog[bot->GetObjectGuid().GetCounter()];
+                        if (!lastMs || WorldTimer::getMSTimeDiff(lastMs, nowMs) >= 10000)
+                        {
+                            lastMs = nowMs;
+                            sLog.outBasic("DpsRoam: %s target %s is %.0fy from tank %s",
+                                          bot->GetName(), nearest->GetName(), tankDist, member->GetName());
+                        }
+                    }
                     break;
                 }
             }
