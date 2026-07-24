@@ -89,6 +89,11 @@ namespace
 
     // healthstones a warlock might carry (master + lvl-60 ranks, DB-verified)
     const uint32 HEALTHSTONE_IDS[] = { 22105, 22104, 22103, 19013, 19012, 19011 };
+
+    // mage conjured stocks, best rank first (1.12 items)
+    const uint32 CONJURED_WATER_IDS[] = { 8079, 8078, 8077, 3772, 2136, 2288, 5350 };
+    const uint32 CONJURED_FOOD_IDS[] = { 22895, 8076, 8075, 1487, 1114, 1113, 5349 };
+    const uint32 MANA_GEM_IDS[] = { 5512, 5509, 5513, 5514 };   // ruby > citrine > jade > agate
     constexpr uint32 SOUL_SHARD = 6265;
 
     Item* FindBagItem(Player* bot, const uint32* ids, size_t count)
@@ -916,10 +921,10 @@ bool PartyExecutor::FollowLeader(PlayerbotAI* ai, Player* bot)
 
 void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
 {
-    // never trample an in-progress cast: conjures take 3s and summons 10s,
-    // and the fall-through to FollowLeader was cancelling them with
-    // movement every tick — no healthstone or demon ever got finished
-    if (bot->IsNonMeleeSpellCasted(false, true, true))
+    // never trample an in-progress cast OR channel: conjures take 3s,
+    // summons 10s, evocation channels 8s — the fall-through to FollowLeader
+    // was cancelling them with movement every tick
+    if (bot->IsNonMeleeSpellCasted(false, false, true))
     {
         ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
         return;
@@ -1033,6 +1038,26 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
             sLog.outBasic("PartyExecutor: %s cannot create healthstone (result=%u, shards=%u)",
                           bot->GetName(), uint32(createResult), shards);
         }
+    }
+
+    // mage upkeep: a human mage keeps conjured stocks topped up and a mana
+    // gem banked. Cast-by-name resolves the highest known rank, so training
+    // max-rank conjures automatically upgrades the stock.
+    if (bot->getClass() == CLASS_MAGE)
+    {
+        uint32 water = 0, food = 0;
+        for (uint32 id : CONJURED_WATER_IDS)
+            water += bot->GetItemCount(id);
+        for (uint32 id : CONJURED_FOOD_IDS)
+            food += bot->GetItemCount(id);
+        if (water < 10 && Cast(ai, "conjure water", bot))
+            return;
+        if (food < 5 && Cast(ai, "conjure food", bot))
+            return;
+        if (!FindBagItem(bot, MANA_GEM_IDS, sizeof(MANA_GEM_IDS) / sizeof(uint32)) &&
+            (Cast(ai, "conjure mana ruby", bot) || Cast(ai, "conjure mana citrine", bot) ||
+             Cast(ai, "conjure mana jade", bot) || Cast(ai, "conjure mana agate", bot)))
+            return;
     }
 
     // rogue: poisons on both blades, then stealth before the fight finds you
@@ -2174,6 +2199,42 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
         }
     }
 
+    // mana economy: gem first (instant, works under fire), evocation only
+    // when nothing is hitting the mage (8s channel, pushback otherwise)
+    if (uint32 manaMax = bot->GetMaxPower(POWER_MANA))
+    {
+        uint32 manaPct = bot->GetPower(POWER_MANA) * 100 / manaMax;
+        uint32 nowMs = WorldTimer::getMSTime();
+        if (manaPct < 40)
+        {
+            static std::map<uint32, uint32> lastGemMs;
+            uint32& lastGem = lastGemMs[bot->GetObjectGuid().GetCounter()];
+            if (!lastGem || nowMs - lastGem > 30000)   // gem cd is 2 min; don't spam the fail path
+                if (Item* gem = FindBagItem(bot, MANA_GEM_IDS, sizeof(MANA_GEM_IDS) / sizeof(uint32)))
+                {
+                    lastGem = nowMs;
+                    SpellCastTargets targets;
+                    targets.setUnitTarget(bot);
+                    bot->CastItemUseSpell(gem, targets, 0);
+                    return true;
+                }
+        }
+        if (manaPct < 20 && !bot->InArena())
+        {
+            bool beingHit = false;
+            std::list<ObjectGuid> hostiles = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+            for (const ObjectGuid& guid : hostiles)
+                if (Unit* mob = ai->GetUnit(guid))
+                    if (mob->GetVictim() == bot)
+                    {
+                        beingHit = true;
+                        break;
+                    }
+            if (!beingHit && Cast(ai, "evocation", bot))
+                return true;
+        }
+    }
+
     // dungeon packs: Blizzard beats single-target once the tank has a pile
     // (Strat runs were pure Frostbolt into 4-mob pulls). NB this block spent
     // three tuning rounds inside EleShamanTick by mistake — every "mage still
@@ -2838,8 +2899,10 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
                     DrObserve(ai, enemy);
     }
 
-    // mid-cast: let the cast land instead of walking through it
-    if (bot->IsNonMeleeSpellCasted(false, true, true))
+    // mid-cast OR mid-channel: let it land instead of walking through it.
+    // skipChanneled=true here made blizzard invisible to the guard — the
+    // next tick's fireball stomped every channel almost instantly.
+    if (bot->IsNonMeleeSpellCasted(false, false, true))
     {
         DpsIdleProbe(ai, bot, "mid-cast");
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
