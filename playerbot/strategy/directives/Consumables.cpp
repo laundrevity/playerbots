@@ -36,10 +36,12 @@ namespace
     constexpr uint32 TEA_THROTTLE_MS = 305 * 1000;         // thistle tea cd 5 min
     constexpr uint32 OIL_THROTTLE_MS = 65 * 1000;
     constexpr uint32 RESTOCK_THROTTLE_MS = 60 * 1000;
+    constexpr uint32 PERSISTENT_REAPPLY_THROTTLE_MS = 60 * 1000;
 
     struct Throttles
     {
         uint32 potionMs = 0, explosiveMs = 0, runeMs = 0, teaMs = 0, oilMs = 0, restockMs = 0;
+        std::map<uint32, uint32> persistentMs;
     };
     std::map<uint32, Throttles> s_throttles;
 
@@ -84,10 +86,10 @@ namespace
         return 0;
     }
 
-    // the aura the item actually leaves on you: some use-spells only TRIGGER
-    // the real buff (R.O.I.D.S. 10667 -> "Holy Strength" 20007). Checking
-    // the use-spell's aura read those buffs as missing and re-ate the item
-    // every upkeep pass (finding C2C-20260724-1339-002).
+    // Prefer a use-spell's own aura. Only pure wrapper spells should resolve
+    // through SPELL_EFFECT_TRIGGER_SPELL: Rumsey 25804 has a persistent
+    // stamina aura plus a secondary alcohol trigger, and treating 11009 as
+    // its buff aura caused one re-drink per executor tick.
     uint32 ItemBuffAura(uint32 itemId)
     {
         uint32 spellId = ItemBuffSpell(itemId);
@@ -95,10 +97,15 @@ namespace
             return 0;
         SpellEntry const* spellInfo = sServerFacade.LookupSpellInfo(spellId);
         if (spellInfo)
+        {
+            for (int i = 0; i < MAX_EFFECT_INDEX; ++i)
+                if (spellInfo->EffectApplyAuraName[i])
+                    return spellId;
             for (int i = 0; i < MAX_EFFECT_INDEX; ++i)
                 if (spellInfo->Effect[i] == SPELL_EFFECT_TRIGGER_SPELL &&
                     spellInfo->EffectTriggerSpell[i])
                     return spellInfo->EffectTriggerSpell[i];
+        }
         return spellId;
     }
 
@@ -124,9 +131,14 @@ namespace
     {
         if (HasBuffOf(bot, itemId))
             return false;
+        uint32 nowMs = WorldTimer::getMSTime();
+        uint32& lastApply = ThrottlesFor(bot).persistentMs[itemId];
+        if (!Ready(lastApply, nowMs, PERSISTENT_REAPPLY_THROTTLE_MS))
+            return false;
         Item* item = FindItem(bot, itemId);
         if (!item)
             return false;   // skip unavailable, never block progress
+        lastApply = nowMs;
         return UseItemOn(bot, item, bot, false);
     }
 
@@ -166,12 +178,9 @@ namespace
             bot->StoreNewItemInBestSlots(itemId, want - have);
     }
 
-    // A category is a set of mutually EXCLUSIVE alternatives, preferred
-    // first: satisfied when ANY member's aura is up, else the first
-    // available item is applied. This core's stacking rules make Juju Power
-    // and R.O.I.D.S. replace each other (runtime: Juju Power aura_off at the
-    // same ms Holy Strength lands) — modeling them as independent desires
-    // churned buffs and ate consumables forever (C2C-20260724-1339-002).
+    // A category is a set of mutually exclusive alternatives, preferred
+    // first: satisfied when any member's aura is up, otherwise the first
+    // available item is applied.
     using BuffCategory = std::vector<uint32>;
 
     // persistent sets per the profile doc (well-fed foods deferred: eating
@@ -183,13 +192,13 @@ namespace
         switch (bot->getClass())
         {
             case CLASS_WARRIOR:
-                out = { { FLASK_TITANS }, { MONGOOSE }, { JUJU_POWER, ROIDS },
+                out = { { FLASK_TITANS }, { MONGOOSE }, { JUJU_POWER }, { ROIDS },
                         { JUJU_MIGHT }, { FORTITUDE }, { RUMSEY_BLACK } };
                 if (tank)
                     out.push_back({ GIFT_OF_ARTHAS });   // tank-only: mobs hit HIM
                 break;
             case CLASS_ROGUE:
-                out = { { FLASK_TITANS }, { MONGOOSE }, { JUJU_POWER, ROIDS },
+                out = { { FLASK_TITANS }, { MONGOOSE }, { JUJU_POWER },
                         { JUJU_MIGHT }, { SCORPOK }, { FORTITUDE }, { RUMSEY_BLACK } };
                 break;
             case CLASS_MAGE:
