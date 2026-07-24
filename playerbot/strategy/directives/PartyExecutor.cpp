@@ -1050,6 +1050,29 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         if (ai->DoSpecificAction("apply directive", Event(), true))
             return;
 
+    // NEUTRAL mobs (Strat citizens) only ever aggro their engager: they
+    // never appear in a dps bot's per-player attackers list and never put
+    // the dps in combat — so the tank soloed every citizen pack while the
+    // group watched from the out-of-combat tick. A member fighting a living
+    // npc pulls every non-healer bot into the fight.
+    if (!IsHealerSpec(bot))
+        if (Group* group = bot->GetGroup())
+            for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                Player* member = itr->getSource();
+                if (!member || member == bot || !member->IsInWorld() ||
+                    member->GetMapId() != bot->GetMapId() || !member->IsInCombat())
+                    continue;
+                Unit* victim = member->GetVictim();
+                if (victim && !victim->IsPlayer() && victim->IsAlive() &&
+                    bot->IsWithinDistInMap(victim, 40.0f))
+                {
+                    if (EngageTarget(ai, bot, victim))
+                        return;
+                    break;
+                }
+            }
+
     // mage: evocation between pulls beats a 20-second drink (8s channel,
     // 8 min cd — the 00:10 session logged TWELVE drinks and zero evocations)
     if (bot->getClass() == CLASS_MAGE &&
