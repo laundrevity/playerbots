@@ -2219,22 +2219,25 @@ bool PartyExecutor::RogueTick(PlayerbotAI* ai, Player* bot, Unit* target)
             return true;
     }
 
-    // Slice and Dice uptime is the whole spec (icy-veins combat rogue).
-    // NB self-cast: SnD is a self-buff — casting it "at the enemy" failed
-    // validation every time, and eviscerate was gated behind an aura that
-    // therefore never existed (observed: 59 SS, zero finishers, points
-    // capped at 5 all run)
-    if (combo >= 2 && !ai->HasAura("slice and dice", bot) &&
+    bool bossLike = target->GetMaxHealth() > bot->GetMaxHealth() * 3;
+
+    // dying mob: finish it — don't buff for its corpse (report card: 25 SnD
+    // to 3 eviscerates; every trash mob's points went into re-buffing)
+    if (!bossLike && combo >= 2 && target->GetHealthPercent() < 40.0f &&
+        Cast(ai, "eviscerate", target))
+        return true;
+
+    // Slice and Dice uptime is the whole spec (icy-veins combat rogue), but
+    // maintenance is CHEAP: 1 point on trash (dies before a long SnD pays),
+    // 2+ on bosses. NB self-cast: SnD is a self-buff — casting it "at the
+    // enemy" failed validation every time.
+    if (combo >= (bossLike ? 2 : 1) && !ai->HasAura("slice and dice", bot) &&
         (Cast(ai, "slice and dice", bot) || Cast(ai, "slice and dice", target)))
         return true;
 
     // vanilla combo is PER-TARGET and trash dies in seconds: holding for 5
     // wastes everything (probes: combo=0 at 30 of 36 samples, 93 builders ->
     // one finisher). Spend EARLY on dying mobs; hold to 5 only on bosses.
-    bool bossLike = target->GetMaxHealth() > bot->GetMaxHealth() * 3;
-    if (!bossLike && combo >= 2 && target->GetHealthPercent() < 40.0f &&
-        Cast(ai, "eviscerate", target))
-        return true;
     if (!bossLike && combo >= 3 && target->GetHealthPercent() < 60.0f &&
         Cast(ai, "eviscerate", target))
         return true;
@@ -2383,7 +2386,13 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
         {
             if (Cast(ai, "blizzard", target))
                 return true;
-            // dest-targeted cast refused? name it so we know to re-plumb
+            // name the refusal reason (8 unexplained refusals last session)
+            {
+                SpellCastResult blizzResult = SPELL_CAST_OK;
+                ai->CanCastSpell("blizzard", target, 0, nullptr, false, false, false, &blizzResult);
+                sLog.outBasic("MagePack: %s blizzard refused (result=%u, packed=%u)",
+                              bot->GetName(), uint32(blizzResult), packed);
+            }
             DpsIdleProbe(ai, bot, "blizzard-failed");
         }
     }
@@ -2483,8 +2492,66 @@ bool PartyExecutor::RetPaladinTick(PlayerbotAI* ai, Player* bot, Unit* target)
     return false;
 }
 
+bool PartyExecutor::FuryWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
+{
+    // fury dps (report card: Adps ran ZERO bloodthirst — dps warriors all
+    // fell into the arms tick where mortal strike fails and battle stance is
+    // forced). Berserker stance, BT on cooldown, whirlwind on packs, execute
+    // window, HS/cleave dump. Same doctrine the Hfury trio needs.
+    if (ThreatCapped(ai, bot, target))
+    {
+        ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+        return true;
+    }
+
+    if (!ai->HasAura("berserker stance", bot) && Cast(ai, "berserker stance", bot))
+        return true;
+    if (!ai->HasAura("battle shout", bot) && Cast(ai, "battle shout", bot))
+        return true;    // imp battle shout is the fury AP centerpiece
+
+    if (BurnPolicy(ai))
+    {
+        if (Cast(ai, "death wish", bot))
+            return true;
+        if (Cast(ai, "recklessness", bot))
+            return true;
+    }
+
+    if (target->IsPlayer() && !ai->HasAura("hamstring", target) && Cast(ai, "hamstring", target))
+        return true;
+
+    if (target->GetHealthPercent() < 20.0f && Cast(ai, "execute", target))
+        return true;
+
+    if (Cast(ai, "bloodthirst", target))
+        return true;
+
+    uint32 nearbyMelee = 0;
+    {
+        std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+        for (const ObjectGuid& guid : attackers)
+            if (Unit* attacker = ai->GetUnit(guid))
+                if (attacker->IsAlive() && bot->CanReachWithMeleeAttack(attacker))
+                    ++nearbyMelee;
+    }
+    if (nearbyMelee >= 2 && Cast(ai, "whirlwind", target))
+        return true;
+
+    // dump above 35 rage: keeps the next BT funded while spending the rest
+    if (bot->GetPower(POWER_RAGE) > 350 &&
+        Cast(ai, nearbyMelee >= 2 ? "cleave" : "heroic strike", target))
+        return true;
+
+    return false;
+}
+
 bool PartyExecutor::ArmsWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
 {
+    // fury-specced dps warriors get the fury tick (tab 1); arms/undecided
+    // fall through to the mortal-strike line below
+    if (AiFactory::GetPlayerSpecTab(bot) == 1)
+        return FuryWarriorTick(ai, bot, target);
+
     if (ThreatCapped(ai, bot, target))
     {
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
