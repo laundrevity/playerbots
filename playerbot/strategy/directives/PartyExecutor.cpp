@@ -4,6 +4,7 @@
 #include "playerbot/AiFactory.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
+#include "playerbot/strategy/directives/Consumables.h"
 #include "playerbot/strategy/directives/DirectiveMgr.h"
 #include "playerbot/strategy/directives/DirectiveValues.h"
 #include "playerbot/strategy/directives/ShotCaller.h"
@@ -1032,6 +1033,14 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
     // keep the party buffed before anyone thinks about pulling
     if (KeepPartyBuffed(ai, bot))
         return;
+
+    // phase-6 consumable doctrine: persistent buffs, weapon stones/oils/
+    // poisons, bandages, and dungeon auto-restock (throttled inside)
+    if (Consumables::OutOfCombatTick(ai, bot))
+    {
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return;
+    }
 
     // warlock upkeep: a demon out, soul link on, a healthstone in the bags
     if (bot->getClass() == CLASS_WARLOCK)
@@ -3121,9 +3130,16 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
         return;
     }
 
-    // healers: triage owns the tick — never fall through to dps logic
+    // healers: triage owns the tick — never fall through to dps logic.
+    // Consumables first: a mana potion IS triage when the tank eats a hit
+    // during the 20 seconds the healer would otherwise be dry.
     if (IsHealerSpec(bot))
     {
+        if (Consumables::CombatTick(ai, bot, nullptr))
+        {
+            ai->SetAIInternalUpdateDelay(AFTER_CAST_DELAY_MS);
+            return;
+        }
         bool acted = HealerTriageTick(ai, bot);
         ai->SetAIInternalUpdateDelay(acted ? AFTER_CAST_DELAY_MS : IDLE_DELAY_MS);
         return;
@@ -3165,6 +3181,14 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     if (MeleeGetBehind(ai, bot, target))
     {
         DpsIdleProbe(ai, bot, "repositioning");
+        return;
+    }
+
+    // 4b. phase-6 consumables: potions/runes/tea/explosives/oil, all gated
+    // and throttled inside; a use costs this tick like any cast
+    if (Consumables::CombatTick(ai, bot, target))
+    {
+        ai->SetAIInternalUpdateDelay(AFTER_CAST_DELAY_MS);
         return;
     }
 
