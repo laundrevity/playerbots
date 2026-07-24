@@ -1458,6 +1458,38 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
     }
     else if (group)
     {
+        // healer rescue outranks the assist train: a mob eating the master
+        // or a healer dies FIRST. Taunt peels one mob per 10s and the threat
+        // governor doesn't cap loose mobs — dps switching is the real answer
+        // ("i keep aggro for entire pulls just from healing").
+        {
+            std::list<ObjectGuid> attackers = context->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+            Player* master = ai->GetMaster();
+            Unit* menace = nullptr;
+            float best = 1000.0f;
+            for (const ObjectGuid& guid : attackers)
+            {
+                Unit* mob = ai->GetUnit(guid);
+                if (!mob || sServerFacade.UnitIsDead(mob) || IsSoftCrowdControlled(ai, mob))
+                    continue;
+                Unit* victim = mob->GetVictim();
+                if (!victim || !victim->IsPlayer())
+                    continue;
+                bool protectee = (master && victim == master) ||
+                                 PlayerbotAI::IsHeal((Player*)victim);
+                if (!protectee)
+                    continue;
+                float distance = sServerFacade.GetDistance2d(bot, mob);
+                if (distance < best)
+                {
+                    best = distance;
+                    menace = mob;
+                }
+            }
+            if (menace)
+                return menace;
+        }
+
         for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
             Player* member = itr->getSource();
@@ -1753,6 +1785,26 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
 
     if (target->GetVictim() && target->GetVictim() != bot && Cast(ai, "taunt", target))
         return true;
+
+    // big-pull rescue: taunt peels one mob per 10s — when a pile is beating
+    // on the party (healing aggro on mobs the tank never touched),
+    // Challenging Shout fixates everything within 10y for 6s and buys the
+    // sunder ledger time. 10-min cd = a genuine emergency button.
+    {
+        uint32 loose = 0;
+        for (const ObjectGuid& guid : attackers)
+            if (Unit* mob = ai->GetUnit(guid))
+                if (mob->IsAlive() && mob->GetVictim() && mob->GetVictim() != bot &&
+                    mob->GetVictim()->IsPlayer() &&
+                    sServerFacade.GetDistance2d(bot, mob) < 10.0f &&
+                    !IsSoftCrowdControlled(ai, mob))
+                    ++loose;
+        if (loose >= 3 && Cast(ai, "challenging shout", bot))
+        {
+            sLog.outBasic("TankRescue: %s challenging shout (%u loose mobs)", bot->GetName(), loose);
+            return true;
+        }
+    }
 
     if (TankFaceAway(ai, bot, target))
         return true;
@@ -2166,12 +2218,17 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
     {
         if (BurnPolicy(ai) && Cast(ai, "combustion", bot))
             return true;
-        // 5x Improved Scorch stacks, refresh under 4s, else fireball stream
-        Aura* vulnerability = ai->GetAura("fire vulnerability", target);
-        uint32 stacks = vulnerability ? vulnerability->GetStackAmount() : 0;
-        int32 remaining = vulnerability ? vulnerability->GetAuraDuration() : 0;
-        if ((stacks < 5 || remaining < 4000) && Cast(ai, "scorch", target))
-            return true;
+        // 5x Improved Scorch stacks — but only on targets that live long
+        // enough to repay the ramp (last session: 70 scorches to 3 fireballs
+        // because every trash mob got the full stack treatment)
+        if (target->GetMaxHealth() > bot->GetMaxHealth() * 3)
+        {
+            Aura* vulnerability = ai->GetAura("fire vulnerability", target);
+            uint32 stacks = vulnerability ? vulnerability->GetStackAmount() : 0;
+            int32 remaining = vulnerability ? vulnerability->GetAuraDuration() : 0;
+            if ((stacks < 5 || remaining < 4000) && Cast(ai, "scorch", target))
+                return true;
+        }
         if (Cast(ai, "fireball", target))
             return true;
     }

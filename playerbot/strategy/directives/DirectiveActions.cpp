@@ -227,7 +227,7 @@ bool ApplyDirectiveAction::Execute(Event& event)
         static const char* const EMERGENCY_SPELLS[] = {
             "shield wall", "last stand", "shield block", "evasion", "vanish",
             "feign death", "divine protection", "divine shield", "lay on hands",
-            "barkskin", "frenzied regeneration", "ice block"};
+            "barkskin", "frenzied regeneration", "ice block", "challenging shout"};
         bool allowed = false;
         for (const char* spell : EMERGENCY_SPELLS)
             if (SameNameNoCase(spell, incoming.useSpell.c_str()))
