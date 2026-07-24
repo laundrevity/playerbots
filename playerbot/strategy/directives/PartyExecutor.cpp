@@ -41,7 +41,8 @@ namespace
     constexpr float THREAT_CEILING = 0.9f;
 
     // route chunks and leashes (yards)
-    constexpr float ROUTE_LEASH = 35.0f;
+    constexpr float ROUTE_LEASH = 25.0f;   // was 35: tank drifted a room away
+                                           // toward gauntlet gate pulling
     constexpr float ROUTE_CHUNK = 80.0f;    // one smooth spline per chunk
     constexpr float ROUTE_PULL_RANGE = 35.0f;
 
@@ -1596,29 +1597,44 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
     }
     else if (group)
     {
-        // healer rescue outranks the assist train: a mob eating the master
-        // or a healer dies FIRST. Taunt peels one mob per 10s and the threat
-        // governor doesn't cap loose mobs — dps switching is the real answer
-        // ("i keep aggro for entire pulls just from healing").
+        // rescue outranks the assist train: a mob eating the master or a
+        // healer dies FIRST, and any party member being SWARMED (2+ mobs)
+        // is everyone's problem — Hfuryc solo-tanked a 5-pack for 40s while
+        // three warriors watched, because only master/healers triggered this.
         {
             std::list<ObjectGuid> attackers = context->GetValue<std::list<ObjectGuid>>("attackers")->Get();
             Player* master = ai->GetMaster();
+            std::map<ObjectGuid, uint32> perVictim;
+            for (const ObjectGuid& guid : attackers)
+                if (Unit* mob = ai->GetUnit(guid))
+                    if (mob->IsAlive() && mob->GetVictim() && mob->GetVictim()->IsPlayer())
+                        ++perVictim[mob->GetVictim()->GetObjectGuid()];
             Unit* menace = nullptr;
             float best = 1000.0f;
+            bool bestProtectee = false;
             for (const ObjectGuid& guid : attackers)
             {
                 Unit* mob = ai->GetUnit(guid);
                 if (!mob || sServerFacade.UnitIsDead(mob) || IsSoftCrowdControlled(ai, mob))
                     continue;
                 Unit* victim = mob->GetVictim();
-                if (!victim || !victim->IsPlayer())
+                if (!victim || !victim->IsPlayer() || victim == bot)
                     continue;
                 bool protectee = (master && victim == master) ||
                                  PlayerbotAI::IsHeal((Player*)victim);
-                if (!protectee)
+                bool swarmed = perVictim[victim->GetObjectGuid()] >= 2 &&
+                               !IsTankBot((Player*)victim);
+                if (!protectee && !swarmed)
                     continue;
                 float distance = sServerFacade.GetDistance2d(bot, mob);
-                if (distance < best)
+                // master/healer targets always outrank a swarmed-dps rescue
+                if (protectee && !bestProtectee)
+                {
+                    best = distance;
+                    menace = mob;
+                    bestProtectee = true;
+                }
+                else if (protectee == bestProtectee && distance < best)
                 {
                     best = distance;
                     menace = mob;
@@ -1667,7 +1683,24 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
                         nearest = mtarget;
     }
     if (nearest)
+    {
+        // roam probe: a dps resolving a target far from the TANK is how the
+        // Hfuryc solo-wander started — name it when it happens again
+        if (!IsTankBot(bot) && group)
+            for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                Player* member = itr->getSource();
+                if (member && member != bot && member->IsInWorld() && IsTankBot(member))
+                {
+                    float tankDist = sServerFacade.GetDistance2d(member, nearest);
+                    if (tankDist > 30.0f)
+                        sLog.outBasic("DpsRoam: %s target %s is %.0fy from tank %s",
+                                      bot->GetName(), nearest->GetName(), tankDist, member->GetName());
+                    break;
+                }
+            }
         return UncappedAlternative(ai, bot, nearest);
+    }
 
     // 3e. arena: focus fire — a living teammate's target outranks nearest
     if (bot->InArena() && group)
