@@ -1811,6 +1811,54 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (target->GetVictim() && target->GetVictim() != bot && Cast(ai, "taunt", target))
         return true;
 
+    // swarm on the backline: taunt handles ONE mob and only in range — when
+    // several mobs are on the master/healer standing at range, a human tank
+    // RUNS to them and unloads there. Scholo wipe forensics: 5 mobs beat the
+    // healer to death while the tank stood in his own pack, challenging
+    // shout's 10y radius never containing any of them.
+    {
+        Player* master = ai->GetMaster();
+        uint32 swarm = 0;
+        Unit* anchor = nullptr;
+        for (const ObjectGuid& guid : attackers)
+            if (Unit* mob = ai->GetUnit(guid))
+                if (mob->IsAlive() && mob->GetVictim() && mob->GetVictim() != bot &&
+                    mob->GetVictim()->IsPlayer() && !IsSoftCrowdControlled(ai, mob))
+                {
+                    Player* victim = (Player*)mob->GetVictim();
+                    if ((master && victim == master) || PlayerbotAI::IsHeal(victim))
+                    {
+                        ++swarm;
+                        if (!anchor)
+                            anchor = victim;
+                    }
+                }
+        if (swarm >= 2 && anchor)
+        {
+            if (sServerFacade.GetDistance2d(bot, anchor) > 8.0f)
+            {
+                static std::map<uint32, uint32> lastRunMs;
+                uint32 nowMs = WorldTimer::getMSTime();
+                uint32& lastRun = lastRunMs[bot->GetObjectGuid().GetCounter()];
+                if (!lastRun || nowMs - lastRun > 3000)
+                {
+                    lastRun = nowMs;
+                    sLog.outBasic("TankRescue: %s running to %s (%u mobs on the backline)",
+                                  bot->GetName(), anchor->GetName(), swarm);
+                    bot->GetMotionMaster()->MovePoint(0, anchor->GetPositionX(),
+                        anchor->GetPositionY(), anchor->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                }
+                return true;
+            }
+            if (Cast(ai, "challenging shout", bot))
+            {
+                sLog.outBasic("TankRescue: %s challenging shout at %s (%u mobs)",
+                              bot->GetName(), anchor->GetName(), swarm);
+                return true;
+            }
+        }
+    }
+
     // big-pull rescue: taunt peels one mob per 10s — when a pile is beating
     // on the party (healing aggro on mobs the tank never touched),
     // Challenging Shout fixates everything within 10y for 6s and buys the
