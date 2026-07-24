@@ -71,6 +71,41 @@ namespace
         return true;
     }
 
+    // One deterministic party-wide engagement view: every member's victim
+    // plus every hostile currently ATTACKING any member. Per-bot "attackers"
+    // values and GetVictim scans both missed healer attackers and split
+    // engagements (17:24 run: 16 solo windows; mobs on the healer were
+    // invisible to every rescue rule).
+    void CollectGroupEngagement(PlayerbotAI* ai, Player* bot, std::vector<Unit*>& out)
+    {
+        Group* group = bot->GetGroup();
+        if (!group)
+            return;
+        std::set<ObjectGuid> seen;
+        auto add = [&](Unit* unit)
+        {
+            if (unit && !unit->IsPlayer() && unit->IsAlive() &&
+                seen.insert(unit->GetObjectGuid()).second)
+                out.push_back(unit);
+        };
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (!member || !member->IsInWorld() || member->GetMapId() != bot->GetMapId())
+                continue;
+            add(member->GetVictim());
+            for (Unit* attacker : member->getAttackers())
+                add(attacker);
+        }
+    }
+
+    // wand churn guard: 17:24 run had 26 Shoot starts and ONE completion —
+    // every re-cast cancels the previous autorepeat before it fires
+    bool AutoRepeating(Player* bot)
+    {
+        return bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) != nullptr;
+    }
+
     // role sensor for everything tank-shaped in this file: the strategy-list
     // answer, OR a warrior sitting in Defensive Stance (aura 71). The modern
     // 3/31/17 dual-wield tank reads as FURY by talent tab and would lose the
@@ -1071,22 +1106,23 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
     // group watched from the out-of-combat tick. A member fighting a living
     // npc pulls every non-healer bot into the fight.
     if (!IsHealerSpec(bot))
-        if (Group* group = bot->GetGroup())
-            for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
-            {
-                Player* member = itr->getSource();
-                if (!member || member == bot || !member->IsInWorld() ||
-                    member->GetMapId() != bot->GetMapId() || !member->IsInCombat())
-                    continue;
-                Unit* victim = member->GetVictim();
-                if (victim && !victim->IsPlayer() && victim->IsAlive() &&
-                    bot->IsWithinDistInMap(victim, 40.0f))
-                {
-                    if (EngageTarget(ai, bot, victim))
-                        return;
-                    break;
-                }
-            }
+    {
+        // party-wide engagement view: also sees mobs beating on the HEALER
+        // (they have no offensive victim to scan for) and split fights
+        std::vector<Unit*> engaged;
+        CollectGroupEngagement(ai, bot, engaged);
+        Unit* join = nullptr;
+        float joinBest = 40.0f;
+        for (Unit* mob : engaged)
+        {
+            if (!bot->IsWithinDistInMap(mob, joinBest))
+                continue;
+            joinBest = bot->GetDistance(mob);
+            join = mob;
+        }
+        if (join && EngageTarget(ai, bot, join))
+            return;
+    }
 
     // mage: evocation between pulls beats a 20-second drink (8s channel,
     // 8 min cd — the 00:10 session logged TWELVE drinks and zero evocations)
@@ -1650,13 +1686,16 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
         // is everyone's problem — Hfuryc solo-tanked a 5-pack for 40s while
         // three warriors watched, because only master/healers triggered this.
         {
-            std::list<ObjectGuid> attackers = context->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+            // sourced from the party-wide engagement view: per-bot attackers
+            // missed healer attackers and split fights (17:24 run: 16 solo
+            // windows, eleven of them mobs on the healer)
+            std::vector<Unit*> engaged;
+            CollectGroupEngagement(ai, bot, engaged);
             Player* master = ai->GetMaster();
             std::map<ObjectGuid, uint32> perVictim;
-            for (const ObjectGuid& guid : attackers)
+            for (Unit* mob : engaged)
             {
-                Unit* mob = ai->GetUnit(guid);
-                if (!mob || !mob->IsAlive() || !mob->GetVictim() || !mob->GetVictim()->IsPlayer())
+                if (!mob->GetVictim() || !mob->GetVictim()->IsPlayer())
                     continue;
                 Player* victim = (Player*)mob->GetVictim();
                 if (victim->GetGroup() == group)
@@ -1665,10 +1704,9 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
             Unit* menace = nullptr;
             float best = 1000.0f;
             bool bestProtectee = false;
-            for (const ObjectGuid& guid : attackers)
+            for (Unit* mob : engaged)
             {
-                Unit* mob = ai->GetUnit(guid);
-                if (!mob || sServerFacade.UnitIsDead(mob) || IsSoftCrowdControlled(ai, mob))
+                if (IsSoftCrowdControlled(ai, mob))
                     continue;
                 Unit* victim = mob->GetVictim();
                 if (!victim || !victim->IsPlayer() || victim == bot)
@@ -1710,15 +1748,31 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
         }
     }
 
-    // 3d. nearest attacker
-    std::list<ObjectGuid> attackers = context->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+    // 3d. nearest group-engaged hostile (party-wide view — works from both
+    // ticks and sees healer attackers), leashed to the tank for dps: no
+    // private fights 35y+ from the anvil (Amageone's ghoul sat 57-62y out)
+    std::vector<Unit*> engagedView;
+    CollectGroupEngagement(ai, bot, engagedView);
+    Player* leashTank = nullptr;
+    if (group && !IsTankBot(bot))
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (member && member != bot && member->IsInWorld() &&
+                member->GetMapId() == bot->GetMapId() && IsTankBot(member))
+            {
+                leashTank = member;
+                break;
+            }
+        }
     Unit* nearest = nullptr;
     float best = 1000.0f;
-    for (const ObjectGuid& guid : attackers)
+    for (Unit* attacker : engagedView)
     {
-        Unit* attacker = ai->GetUnit(guid);
-        if (!attacker || sServerFacade.UnitIsDead(attacker))
+        if (sServerFacade.UnitIsDead(attacker))
             continue;
+        if (leashTank && sServerFacade.GetDistance2d(leashTank, attacker) > 35.0f)
+            continue;   // dps leash: outside the tank's fight is not our fight
         float distance = sServerFacade.GetDistance2d(bot, attacker);
         if (distance < best)
         {
@@ -2184,22 +2238,39 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
         {
             if (sServerFacade.GetDistance2d(bot, anchor) > 8.0f)
             {
+                // hysteresis: a tank holding a formed pack (4+ in melee)
+                // does NOT sprint away and drag it across the room — local
+                // answers first (taunt already tried; challenging shout
+                // below), the dps healer-peel handles the rest
+                if (meleeCount >= 4)
+                    swarm = 0;
                 static std::map<uint32, uint32> lastRunMs;
                 uint32 nowMs = WorldTimer::getMSTime();
                 uint32& lastRun = lastRunMs[bot->GetObjectGuid().GetCounter()];
-                if (!lastRun || nowMs - lastRun > 3000)
+                if (swarm)
                 {
-                    lastRun = nowMs;
-                    sLog.outBasic("TankRescue: %s running to %s (%u mobs on the backline)",
-                                  bot->GetName(), anchor->GetName(), swarm);
-                    LogMovementDecision(ai, bot, "rescue", nullptr, anchor);
-                    bot->GetMotionMaster()->MovePoint(0, anchor->GetPositionX(),
-                        anchor->GetPositionY(), anchor->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                    if (!lastRun || nowMs - lastRun > 3000)
+                    {
+                        lastRun = nowMs;
+                        sLog.outBasic("TankRescue: %s running to %s (%u mobs on the backline)",
+                                      bot->GetName(), anchor->GetName(), swarm);
+                        {
+                            char snapshot[64];
+                            snprintf(snapshot, sizeof(snapshot), "swarm=%u melee=%u", swarm, meleeCount);
+                            LogMovementDecision(ai, bot, "rescue", snapshot, anchor);
+                        }
+                        bot->GetMotionMaster()->MovePoint(0, anchor->GetPositionX(),
+                            anchor->GetPositionY(), anchor->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                    }
+                    return true;    // sprint owns the tick only when it runs
                 }
-                return true;
+                // formed pack held: fall through to local answers (shout,
+                // sunder ledger) instead of dragging the anchor
             }
-            if (Cast(ai, "challenging shout", bot))
+            if (swarm && Cast(ai, "challenging shout", bot))
             {
+                // swarm==0 here means the formed-pack hysteresis fired:
+                // don't burn the 10-min shout on mobs it cannot reach
                 sLog.outBasic("TankRescue: %s challenging shout at %s (%u mobs)",
                               bot->GetName(), anchor->GetName(), swarm);
                 return true;
@@ -2247,8 +2318,12 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
         // when surrounded — long back-turned runs through a melee train are
         // the daze machine ("tank showing their back")
         bool snared = bot->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED);
-        float gatherRange = meleeCount >= 3 ? 15.0f : 30.0f;
-        if (!snared && (!last || nowMs - last > 6000) && meleeCount >= 1)
+        float gatherRange = 30.0f;
+        // pack-anchor hysteresis: with 3+ mobs already in melee the anchor
+        // is WORKING — walking off to a caster drags the pack, spreads it
+        // away from blizzard, and exposes the backline (17:24: tank took
+        // only 56% of direct melee; gather legs ran 30y from the human)
+        if (!snared && meleeCount < 3 && (!last || nowMs - last > 6000) && meleeCount >= 1)
         {
             Unit* pick = nullptr;
             uint32 candidates = 0;
@@ -2273,7 +2348,12 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
                 sLog.outBasic("TankGather: %s -> %s (dist %.0f, melee train %u)",
                               bot->GetName(), pick->GetName(),
                               sServerFacade.GetDistance2d(bot, pick), meleeCount);
-                LogMovementDecision(ai, bot, "gather", nullptr, pick);
+                {
+                    char snapshot[64];
+                    snprintf(snapshot, sizeof(snapshot), "melee=%u attackers=%u",
+                             meleeCount, uint32(attackers.size()));
+                    LogMovementDecision(ai, bot, "gather", snapshot, pick);
+                }
                 bot->GetMotionMaster()->MovePoint(0, pick->GetPositionX(),
                     pick->GetPositionY(), pick->GetPositionZ(), FORCED_MOVEMENT_RUN);
                 return true;
@@ -2571,6 +2651,11 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (ThreatCapped(ai, bot, target))
     {
         // wand while parked: negligible threat, real vanilla damage
+        if (AutoRepeating(bot))
+        {
+            ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+            return true;   // wand already running — do not restart it
+        }
         if (Cast(ai, "shoot", target))
             return true;
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
@@ -2700,7 +2785,31 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
         if (packed >= 3 && heldByTank * 2 >= packed &&
             maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 40)
         {
-            if (Cast(ai, "blizzard", target))
+            // anchor on the densest tank-held cluster — the current target
+            // may sit at the pack's edge while the pile stands on the tank
+            Unit* anchor = target;
+            uint32 anchorScore = 0;
+            for (const ObjectGuid& guid : hostiles)
+                if (Unit* mob = ai->GetUnit(guid))
+                {
+                    if (mob->IsPlayer() || !mob->IsAlive())
+                        continue;
+                    Unit* victim = mob->GetVictim();
+                    if (!victim || !victim->IsPlayer() || !IsTankBot((Player*)victim))
+                        continue;
+                    uint32 score = 0;
+                    for (const ObjectGuid& other : hostiles)
+                        if (Unit* neighbour = ai->GetUnit(other))
+                            if (!neighbour->IsPlayer() && neighbour->IsAlive() &&
+                                mob->GetDistance(neighbour) < 8.0f)
+                                ++score;
+                    if (score > anchorScore)
+                    {
+                        anchorScore = score;
+                        anchor = mob;
+                    }
+                }
+            if (Cast(ai, "blizzard", anchor))
                 return true;
             // name the refusal reason (8 unexplained refusals last session)
             {
@@ -2711,6 +2820,20 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
             }
             DpsIdleProbe(ai, bot, "blizzard-failed");
         }
+    }
+
+    // target-lifetime gate: no 3-second casts into trash the party is
+    // already deleting (17:24: 42 of 83 Fireballs died with their target).
+    // Instants or wand until the retarget.
+    if (!target->IsPlayer() && target->GetMaxHealth() < bot->GetMaxHealth() * 3 &&
+        target->GetHealthPercent() < 25.0f)
+    {
+        if (Cast(ai, "fire blast", target))
+            return true;
+        if (!AutoRepeating(bot) && Cast(ai, "shoot", target))
+            return true;
+        ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+        return true;
     }
 
     // spec by talent tab (legible sensor): 0 = arcane, 1 = fire, 2 = frost
@@ -2970,6 +3093,11 @@ bool PartyExecutor::WarlockTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (ThreatCapped(ai, bot, target))
     {
         // wand while parked: negligible threat, real vanilla damage
+        if (AutoRepeating(bot))
+        {
+            ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+            return true;   // wand already running — do not restart it
+        }
         if (Cast(ai, "shoot", target))
             return true;
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
@@ -3466,6 +3594,32 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     Unit* target = PickTarget(ai, bot);
     if (!target)
     {
+        // leash-return: a dps with no group-valid target does not stand in
+        // a private corner — walk back to the anvil
+        if (!IsTankBot(bot))
+            if (Group* group = bot->GetGroup())
+                for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+                {
+                    Player* member = itr->getSource();
+                    if (member && member != bot && member->IsInWorld() &&
+                        member->GetMapId() == bot->GetMapId() && IsTankBot(member))
+                    {
+                        if (bot->GetDistance(member) > 20.0f)
+                        {
+                            static std::map<uint32, uint32> lastLeashMs;
+                            uint32 nowMs = WorldTimer::getMSTime();
+                            uint32& lastLeash = lastLeashMs[bot->GetObjectGuid().GetCounter()];
+                            if (!lastLeash || nowMs - lastLeash > 3000)
+                            {
+                                lastLeash = nowMs;
+                                LogMovementDecision(ai, bot, "leash-return", nullptr, member);
+                                bot->GetMotionMaster()->MovePoint(0, member->GetPositionX(),
+                                    member->GetPositionY(), member->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                            }
+                        }
+                        break;
+                    }
+                }
         DpsIdleProbe(ai, bot, "no-target");
         ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
         return;

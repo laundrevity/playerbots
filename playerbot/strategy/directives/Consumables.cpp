@@ -8,6 +8,7 @@
 #include "Util/Timer.h"
 
 #include <map>
+#include <set>
 
 using namespace ai;
 
@@ -174,8 +175,11 @@ namespace
         if (!itemId)
             return;
         uint32 have = bot->GetItemCount(itemId);
-        if (have < want)
-            bot->StoreNewItemInBestSlots(itemId, want - have);
+        if (have < want && !bot->StoreNewItemInBestSlots(itemId, want - have))
+            // 17:24 run: Afurya fought with zero Mighty Rage / Holy Water —
+            // restock had been failing SILENTLY (full bags). Name it.
+            sLog.outBasic("Consumables: %s restock of item %u failed (bags full?)",
+                          bot->GetName(), itemId);
     }
 
     // A category is a set of mutually exclusive alternatives, preferred
@@ -239,6 +243,26 @@ bool Consumables::OutOfCombatTick(PlayerbotAI* ai, Player* bot)
 
     uint32 nowMs = WorldTimer::getMSTime();
     Throttles& th = ThrottlesFor(bot);
+
+    // readiness audit (once per session): permanent-enchant coverage.
+    // 17:24 run: Adps and Afurya wear IDENTICAL items but 11 vs 3 enchanted
+    // slots — loadout variance masquerading as an AI regression.
+    {
+        static std::set<uint32> audited;
+        if (audited.insert(bot->GetObjectGuid().GetCounter()).second)
+        {
+            uint32 equipped = 0, enchanted = 0;
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+                if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                {
+                    ++equipped;
+                    if (item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT))
+                        ++enchanted;
+                }
+            sLog.outBasic("Readiness: %s %u/%u equipped items carry a permanent enchant",
+                          bot->GetName(), enchanted, equipped);
+        }
+    }
 
     // bags stay stocked in dungeons so doctrine never blocks on supplies
     // (localhost server: provisioning is not the gameplay)
