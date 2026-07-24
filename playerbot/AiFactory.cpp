@@ -122,7 +122,16 @@ std::map<uint32, int32> AiFactory::GetPlayerSpecTabs(const Player* bot)
                 break;
             }
         }
-        tabs[talentTabInfo->tabpage] += maxRank;
+        uint32 page = talentTabInfo->tabpage;
+#ifdef MANGOSBOT_ZERO
+        // vanilla 1.12 TalentTab.dbc ships Fire (tab 41) with tabpage 0 — a
+        // duplicate of Arcane's. Every fire mage's points landed in tab 0, so
+        // spec detection said arcane and the rotations fell back to frostbolt.
+        // The client orders its tabs another way and never trips on this.
+        if (talentInfo->TalentTab == 41)
+            page = 1;
+#endif
+        tabs[page] += maxRank;
     }
 
     return tabs;
