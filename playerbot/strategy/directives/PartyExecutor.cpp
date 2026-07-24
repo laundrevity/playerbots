@@ -1142,9 +1142,13 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
             water += bot->GetItemCount(id);
         for (uint32 id : CONJURED_FOOD_IDS)
             food += bot->GetItemCount(id);
-        if (water < 10 && Cast(ai, "conjure water", bot))
+        // conjuring is a CAST and cancels an in-progress drink — never
+        // conjure while drink-worthy ("mage wasn't drinking"), except the
+        // waterless bootstrap where there is nothing to drink yet
+        bool thirsty = bot->GetPower(POWER_MANA) * 10 < bot->GetMaxPower(POWER_MANA) * 6;
+        if ((water == 0 || !thirsty) && water < 10 && Cast(ai, "conjure water", bot))
             return;
-        if (food < 5 && Cast(ai, "conjure food", bot))
+        if (!thirsty && food < 5 && Cast(ai, "conjure food", bot))
             return;
         // conjure gems only near-full: ruby costs ~1370 mana, and a low-mana
         // attempt silently falls through to a worse gem (observed: jade x4
@@ -1630,7 +1634,7 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
             if (member && member != bot && member->IsInWorld() && IsTankBot(member))
                 if (Unit* tanked = member->GetVictim())
                     if (!sServerFacade.UnitIsDead(tanked))
-                        return tanked;
+                        return UncappedAlternative(ai, bot, tanked);
         }
     }
 
@@ -1663,7 +1667,7 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
                         nearest = mtarget;
     }
     if (nearest)
-        return nearest;
+        return UncappedAlternative(ai, bot, nearest);
 
     // 3e. arena: focus fire — a living teammate's target outranks nearest
     if (bot->InArena() && group)
@@ -1859,6 +1863,36 @@ bool PartyExecutor::ThreatCapped(PlayerbotAI* ai, Player* bot, Unit* target)
     return tanks > 0.0f && mine > ceiling * tanks;
 }
 
+// parked at the ceiling on ONE mob while the tank holds others with
+// headroom stalls the whole pull (market row: the entire dps core idled on
+// a big fresh pack until the human marked skulls — the ceiling froze them
+// on the tank's main target). Find another engaged, un-cc'd pack mob with
+// threat headroom instead of standing there.
+Unit* PartyExecutor::UncappedAlternative(PlayerbotAI* ai, Player* bot, Unit* chosen)
+{
+    if (!chosen || IsTankBot(bot) || !ThreatCapped(ai, bot, chosen))
+        return chosen;
+    std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+    Unit* best = nullptr;
+    float bestDist = 1000.0f;
+    for (const ObjectGuid& guid : attackers)
+        if (Unit* mob = ai->GetUnit(guid))
+        {
+            if (mob == chosen || !mob->IsAlive() || mob->IsPlayer() ||
+                IsSoftCrowdControlled(ai, mob))
+                continue;
+            if (ThreatCapped(ai, bot, mob))
+                continue;
+            float distance = sServerFacade.GetDistance2d(bot, mob);
+            if (distance < bestDist)
+            {
+                bestDist = distance;
+                best = mob;
+            }
+        }
+    return best ? best : chosen;
+}
+
 // melee dps belong behind the target (when someone else is tanking it)
 bool PartyExecutor::MeleeGetBehind(PlayerbotAI* ai, Player* bot, Unit* target)
 {
@@ -2004,7 +2038,12 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
         static std::map<uint32, uint32> lastGather;
         uint32 nowMs = WorldTimer::getMSTime();
         uint32& last = lastGather[bot->GetObjectGuid().GetCounter()];
-        if ((!last || nowMs - last > 6000) && meleeCount >= 1)
+        // never kite the pack while snared/dazed, and keep gather legs short
+        // when surrounded — long back-turned runs through a melee train are
+        // the daze machine ("tank showing their back")
+        bool snared = bot->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED);
+        float gatherRange = meleeCount >= 3 ? 15.0f : 30.0f;
+        if (!snared && (!last || nowMs - last > 6000) && meleeCount >= 1)
         {
             Unit* pick = nullptr;
             uint32 candidates = 0;
@@ -2016,7 +2055,7 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
                     if (caster->IsAlive() && !caster->IsPlayer() &&
                         !bot->CanReachWithMeleeAttack(caster) &&
                         (caster->GetPowerType() == POWER_MANA || !caster->IsMoving()) &&
-                        sServerFacade.GetDistance2d(bot, caster) < 30.0f &&
+                        sServerFacade.GetDistance2d(bot, caster) < gatherRange &&
                         !IsSoftCrowdControlled(ai, caster))
                     {
                         ++candidates;

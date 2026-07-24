@@ -52,6 +52,7 @@ namespace ai
         static Unit* PickTarget(PlayerbotAI* ai, Player* bot);
         static bool EngageTarget(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool ThreatCapped(PlayerbotAI* ai, Player* bot, Unit* target);
+        static Unit* UncappedAlternative(PlayerbotAI* ai, Player* bot, Unit* chosen);
         static void DpsIdleProbe(PlayerbotAI* ai, Player* bot, const char* why);
         static bool MeleeGetBehind(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool TankFaceAway(PlayerbotAI* ai, Player* bot, Unit* target);
