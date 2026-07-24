@@ -1278,13 +1278,18 @@ bool PartyExecutor::EleShamanTick(PlayerbotAI* ai, Player* bot, Unit* target)
     // 4+/50% after the meter showed zero Blizzards across whole runs.
     if (!target->IsPlayer() && target->GetVictim() && target->GetVictim() != bot)
     {
+        // count from ATTACKERS, not "possible targets" — the latter came up
+        // empty all night (MagePack never even logged packed=2) while the
+        // tank's attackers list saw the same pulls at 3-4
         uint32 packed = 0;
-        std::list<ObjectGuid> possible = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
-        for (const ObjectGuid& guid : possible)
+        std::list<ObjectGuid> hostiles = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+        for (const ObjectGuid& guid : hostiles)
             if (Unit* mob = ai->GetUnit(guid))
-                if (!mob->IsPlayer() && mob->IsAlive() && mob->IsInCombat() &&
+                if (!mob->IsPlayer() && mob->IsAlive() &&
                     mob->GetDistance(target) < 10.0f)
                     ++packed;
+        if (target->IsAlive() && !target->IsPlayer())
+            packed = packed > 0 ? packed : 1;   // target itself counts
         uint32 maxMana = bot->GetMaxPower(POWER_MANA);
         // pack telemetry: zero Blizzards in three metered runs and no probe
         // said why — report the clump size the mage actually sees
@@ -1472,22 +1477,15 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
     }
     if (!nearest)
     {
-        // between-kill gap: the attackers list can empty for a beat while the
-        // pack still fights the group (10x "no-target" probes in one run) —
-        // pick up any hostile already in combat nearby
-        std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
-        for (const ObjectGuid& guid : possible)
-        {
-            Unit* mob = ai->GetUnit(guid);
-            if (!mob || mob->IsPlayer() || sServerFacade.UnitIsDead(mob) || !mob->IsInCombat())
-                continue;
-            float distance = sServerFacade.GetDistance2d(bot, mob);
-            if (distance < best && distance < 30.0f)
-            {
-                best = distance;
-                nearest = mob;
-            }
-        }
+        // between-kill gap ("no-target" probes): assist the human — the
+        // master's living target is always a valid pick. ("possible targets"
+        // proved unreliable here: it never populated all night.)
+        if (Player* master = ai->GetMaster())
+            if (master != bot && master->IsAlive())
+                if (Unit* mtarget = master->GetVictim())
+                    if (!sServerFacade.UnitIsDead(mtarget) && !mtarget->IsPlayer() &&
+                        bot->IsWithinDistInMap(mtarget, sPlayerbotAIConfig.sightDistance))
+                        nearest = mtarget;
     }
     if (nearest)
         return nearest;
@@ -1727,6 +1725,23 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (!ai->HasAura("defensive stance", bot) && Cast(ai, "defensive stance", bot))
         return true;
 
+    std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+    uint32 meleeCount = 0;
+    for (const ObjectGuid& guid : attackers)
+        if (Unit* attacker = ai->GetUnit(guid))
+            if (bot->CanReachWithMeleeAttack(attacker))
+                ++meleeCount;
+
+    // the HUMAN being hit is the emergency: taunt that mob off them before
+    // any other priority ("tank ignores me pulling aggro")
+    if (Player* master = ai->GetMaster())
+        if (master != bot && master->IsAlive())
+            for (const ObjectGuid& guid : attackers)
+                if (Unit* menace = ai->GetUnit(guid))
+                    if (menace->IsAlive() && menace->GetVictim() == master &&
+                        Cast(ai, "taunt", menace))
+                        return true;
+
     if (target->GetVictim() && target->GetVictim() != bot && Cast(ai, "taunt", target))
         return true;
 
@@ -1738,13 +1753,6 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     // Stratholme run as a returning branch)
     if (target->GetVictim() == bot)
         Cast(ai, "shield block", bot);
-
-    std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
-    uint32 meleeCount = 0;
-    for (const ObjectGuid& guid : attackers)
-        if (Unit* attacker = ai->GetUnit(guid))
-            if (bot->CanReachWithMeleeAttack(attacker))
-                ++meleeCount;
 
     // pack gathering: casters won't walk to the tank, so the tank walks TO
     // the caster, dragging his melee train into one AoE-able clump.
@@ -1759,9 +1767,12 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
             uint32 candidates = 0;
             for (const ObjectGuid& guid : attackers)
                 if (Unit* caster = ai->GetUnit(guid))
+                    // any STATIONARY ranged attacker anchors the pack — the
+                    // mana-only test rejected Strat's ranged skeletons
+                    // (probes: 24x no-candidate at attackers > melee)
                     if (caster->IsAlive() && !caster->IsPlayer() &&
-                        caster->GetPowerType() == POWER_MANA &&
                         !bot->CanReachWithMeleeAttack(caster) &&
+                        (caster->GetPowerType() == POWER_MANA || !caster->IsMoving()) &&
                         sServerFacade.GetDistance2d(bot, caster) < 30.0f &&
                         !IsSoftCrowdControlled(ai, caster))
                     {
