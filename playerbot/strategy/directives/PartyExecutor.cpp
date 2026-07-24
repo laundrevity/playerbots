@@ -1087,10 +1087,23 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         // attempt silently falls through to a worse gem (observed: jade x4
         // from a mage who knows ruby)
         if (bot->GetPower(POWER_MANA) * 10 >= bot->GetMaxPower(POWER_MANA) * 7 &&
-            !FindBagItem(bot, MANA_GEM_IDS, sizeof(MANA_GEM_IDS) / sizeof(uint32)) &&
-            (Cast(ai, "conjure mana ruby", bot) || Cast(ai, "conjure mana citrine", bot) ||
-             Cast(ai, "conjure mana jade", bot) || Cast(ai, "conjure mana agate", bot)))
-            return;
+            !FindBagItem(bot, MANA_GEM_IDS, sizeof(MANA_GEM_IDS) / sizeof(uint32)))
+        {
+            if (Cast(ai, "conjure mana ruby", bot))
+                return;
+            // ruby still refused at 70%+ mana even after the gate — name the
+            // reason before falling through to a worse gem
+            {
+                SpellCastResult rubyResult = SPELL_CAST_OK;
+                ai->CanCastSpell("conjure mana ruby", bot, 0, nullptr, false, false, false, &rubyResult);
+                sLog.outBasic("MageGem: %s conjure ruby refused (result=%u, mana=%u/%u)",
+                              bot->GetName(), uint32(rubyResult),
+                              bot->GetPower(POWER_MANA), bot->GetMaxPower(POWER_MANA));
+            }
+            if (Cast(ai, "conjure mana citrine", bot) ||
+                Cast(ai, "conjure mana jade", bot) || Cast(ai, "conjure mana agate", bot))
+                return;
+        }
     }
 
     // rogue: poisons on both blades, then stealth before the fight finds you
@@ -1998,8 +2011,9 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (meleeCount >= 2 && Cast(ai, "thunder clap", target))
         return true;
 #endif
-    if (meleeCount >= 2 && Cast(ai, "demoralizing shout", target))
-        return true;
+    if (meleeCount >= 2 && !ai->HasAura("demoralizing shout", target) &&
+        Cast(ai, "demoralizing shout", target))
+        return true;    // gate on the debuff: 57 recasts into its own 30s aura
     if (!ai->HasAura("battle shout", bot) && Cast(ai, "battle shout", bot))
         return true;    // maintained: pack-wide threat + party AP (was 5 casts/25min)
     if (Cast(ai, "devastate", target))
