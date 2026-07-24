@@ -998,6 +998,13 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         if (ai->DoSpecificAction("apply directive", Event(), true))
             return;
 
+    // mage: evocation between pulls beats a 20-second drink (8s channel,
+    // 8 min cd — the 00:10 session logged TWELVE drinks and zero evocations)
+    if (bot->getClass() == CLASS_MAGE &&
+        bot->GetPower(POWER_MANA) * 2 < bot->GetMaxPower(POWER_MANA) &&
+        Cast(ai, "evocation", bot))
+        return;
+
     // upkeep between pulls (humans drink; bots that never drink are a tell)
     if (bot->GetPowerType() == POWER_MANA && bot->GetPower(POWER_MANA) * 2 < bot->GetMaxPower(POWER_MANA))
         if (ai->DoSpecificAction("drink", Event(), true))
@@ -1076,7 +1083,11 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
             return;
         if (food < 5 && Cast(ai, "conjure food", bot))
             return;
-        if (!FindBagItem(bot, MANA_GEM_IDS, sizeof(MANA_GEM_IDS) / sizeof(uint32)) &&
+        // conjure gems only near-full: ruby costs ~1370 mana, and a low-mana
+        // attempt silently falls through to a worse gem (observed: jade x4
+        // from a mage who knows ruby)
+        if (bot->GetPower(POWER_MANA) * 10 >= bot->GetMaxPower(POWER_MANA) * 7 &&
+            !FindBagItem(bot, MANA_GEM_IDS, sizeof(MANA_GEM_IDS) / sizeof(uint32)) &&
             (Cast(ai, "conjure mana ruby", bot) || Cast(ai, "conjure mana citrine", bot) ||
              Cast(ai, "conjure mana jade", bot) || Cast(ai, "conjure mana agate", bot)))
             return;
@@ -2352,7 +2363,9 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
                               target->GetName());
             }
         }
-        if (packed >= 3 && maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 30)
+        // 40% floor: blizzard is 1400 mana a cast — the 30% gate let her AoE
+        // herself dry and drink for 20s a pull (12 drinks in 10 min)
+        if (packed >= 3 && maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 40)
         {
             if (Cast(ai, "blizzard", target))
                 return true;
@@ -2369,9 +2382,9 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
         if (BurnPolicy(ai) && Cast(ai, "combustion", bot))
             return true;
         // 5x Improved Scorch stacks — but only on targets that live long
-        // enough to repay the ramp (last session: 70 scorches to 3 fireballs
-        // because every trash mob got the full stack treatment)
-        if (target->GetMaxHealth() > bot->GetMaxHealth() * 3)
+        // enough to repay the ramp. 3x let Scholo elite trash qualify
+        // (27 scorches in 10 min); 5x means real bosses only.
+        if (target->GetMaxHealth() > bot->GetMaxHealth() * 5)
         {
             Aura* vulnerability = ai->GetAura("fire vulnerability", target);
             uint32 stacks = vulnerability ? vulnerability->GetStackAmount() : 0;
