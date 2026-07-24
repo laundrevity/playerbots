@@ -42,6 +42,14 @@ namespace ai
         static void ReloadRoutes();     // ".bot reload" re-reads party_routes.json
         static bool Cast(PlayerbotAI* ai, const char* spell, Unit* target);   // also the "use" directive's cast path
 
+        // append-only structured movement-decision telemetry (survives
+        // Server.log truncation); reason: route|route-pull|auto-pull|gather|
+        // rescue|come|come-done|come-timeout|route-cancel
+        static void LogMovementDecision(PlayerbotAI* ai, Player* bot, const char* reason,
+                                        const char* detail, Unit* target);
+        // stop an in-flight route spline / point move (steer|hold|fast|come)
+        static void CancelRouteMovement(Player* bot);
+
     private:
         static void CombatTick(PlayerbotAI* ai, Player* bot);
         static void NonCombatTick(PlayerbotAI* ai, Player* bot);
@@ -53,6 +61,7 @@ namespace ai
         static bool EngageTarget(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool ThreatCapped(PlayerbotAI* ai, Player* bot, Unit* target);
         static Unit* UncappedAlternative(PlayerbotAI* ai, Player* bot, Unit* chosen);
+        static bool ComeToMasterTick(PlayerbotAI* ai, Player* bot);
         static void DpsIdleProbe(PlayerbotAI* ai, Player* bot, const char* why);
         static bool MeleeGetBehind(PlayerbotAI* ai, Player* bot, Unit* target);
         static bool TankFaceAway(PlayerbotAI* ai, Player* bot, Unit* target);

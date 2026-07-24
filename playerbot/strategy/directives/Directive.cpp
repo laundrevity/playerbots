@@ -161,6 +161,9 @@ bool ParseDirective(const std::string& text, Directive& out, std::string& error)
     out.useSpell = GetString(j, "use");
     out.pulling = GetString(j, "pulling");
 
+    auto come = j.find("come_to_me");
+    out.comeToMaster = come != j.end() && come->is_boolean() && come->get<bool>();
+
     auto blessing = j.find("blessing");
     if (blessing != j.end() && blessing->is_object())
     {

@@ -37,6 +37,15 @@ namespace ai
             : ManualSetValue<std::string>(ai, "", name) {}
     };
 
+    // "come to me" deadline (ms clock); 0 = inactive. The executor moves to
+    // the master until 3D proximity + LoS or this deadline passes.
+    class ComeToMasterUntilValue : public ManualSetValue<uint32>
+    {
+    public:
+        ComeToMasterUntilValue(PlayerbotAI* ai, std::string name = "come to master until")
+            : ManualSetValue<uint32>(ai, 0, name) {}
+    };
+
     // First still-valid kill-order entry, with the same legality checks the
     // rti (skull) targeting applies. Returns nullptr when the directive is
     // absent, expired, or none of its targets are currently attackable.

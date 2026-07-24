@@ -23,8 +23,10 @@
 #include "Util/Timer.h"
 
 #include <cmath>
+#include <ctime>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <vector>
 
@@ -730,7 +732,11 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     if (!IsTankBot(bot))
         return false;
     std::string pullPolicy = ai->GetAiObjectContext()->GetValue<std::string>("pull policy")->Get();
-    if (HoldPolicy(ai) || pullPolicy == "hold" || pullPolicy == "steer")
+    // navigation authority is separate from pace: the configured boss route
+    // runs ONLY under normal policy. 16:10 run: 'fast' resumed the flat
+    // route toward the skipped live-side boss through Slaughter Square's
+    // closed gate — fast means faster HUMAN-directed pulls, never autopilot.
+    if (HoldPolicy(ai) || pullPolicy == "hold" || pullPolicy == "steer" || pullPolicy == "fast")
         return false;
 
     Map* map = bot->GetMap();
@@ -810,7 +816,10 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
         pick = candidate;
     }
     if (pick)
+    {
+        LogMovementDecision(ai, bot, "route-pull", objective ? std::to_string(objective->entry).c_str() : nullptr, pick);
         return EngagePull(ai, bot, pick);
+    }
 
     // clean road: keep one smooth spline running along the mmap path —
     // point-move legs stutter at every boundary and read as bad pathing
@@ -834,6 +843,7 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     init.MovebyPath(points);
     init.SetWalk(false);
     init.Launch();
+    LogMovementDecision(ai, bot, "route", objective ? std::to_string(objective->entry).c_str() : nullptr, objectiveUnit);
     ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
     return true;
 }
@@ -947,6 +957,7 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
     if (!pick)
         return false;   // nothing ahead: turn to steer me
 
+    LogMovementDecision(ai, bot, "auto-pull", steer ? "steer" : (fast ? "fast" : "cone"), pick);
     return EngagePull(ai, bot, pick);
 }
 
@@ -1049,6 +1060,10 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
     if (sDirectiveMgr.HasPending(bot->GetObjectGuid()))
         if (ai->DoSpecificAction("apply directive", Event(), true))
             return;
+
+    // "come to me" outranks everything the tick could otherwise want
+    if (ComeToMasterTick(ai, bot))
+        return;
 
     // NEUTRAL mobs (Strat citizens) only ever aggro their engager: they
     // never appear in a dps bot's per-player attackers list and never put
@@ -1526,7 +1541,19 @@ bool PartyExecutor::TryInterrupt(PlayerbotAI* ai, Player* bot, Unit* target)
     {
         case CLASS_ROGUE:   return Cast(ai, "kick", target);
         case CLASS_MAGE:    return Cast(ai, "counterspell", target);
-        case CLASS_WARRIOR: return Cast(ai, "shield bash", target);
+        case CLASS_WARRIOR:
+        {
+            // 16:10 run: 306 hostile cast starts, zero interrupts — every
+            // warrior tried shield bash and this party dual-wields. Pummel
+            // is the DW interrupt (berserker stance; the fury tick lives
+            // there). Shield bash only when a shield is actually equipped.
+            Item* offhand = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
+            bool hasShield = offhand && offhand->GetProto() &&
+                             offhand->GetProto()->InventoryType == INVTYPE_SHIELD;
+            if (hasShield && Cast(ai, "shield bash", target))
+                return true;
+            return Cast(ai, "pummel", target);
+        }
 #ifdef MANGOSBOT_TWO
         case CLASS_SHAMAN:  return Cast(ai, "wind shear", target);   // earth shock stopped interrupting in 3.0
 #else
@@ -1964,6 +1991,112 @@ Unit* PartyExecutor::UncappedAlternative(PlayerbotAI* ai, Player* bot, Unit* cho
     return best ? best : chosen;
 }
 
+// Movement-decision telemetry: one JSONL line per navigation decision,
+// append-only in LogsDir so a mangosd restart cannot destroy the evidence
+// (Server.log truncates every boot — the 16:10 gate excursion could not be
+// replayed). Fields per the 022 handoff: reason, policy, actor/target
+// positions, master/tank 3D distances, LoS to target.
+void PartyExecutor::LogMovementDecision(PlayerbotAI* ai, Player* bot, const char* reason,
+                                        const char* detail, Unit* target)
+{
+    static std::mutex s_moveMutex;
+    static std::ofstream s_moveLog;
+    std::lock_guard<std::mutex> lock(s_moveMutex);
+    if (!s_moveLog.is_open())
+    {
+        s_moveLog.open("../logs/movement_decisions.jsonl", std::ios::app);
+        if (!s_moveLog.is_open())
+            s_moveLog.open("movement_decisions.jsonl", std::ios::app);
+        if (!s_moveLog.is_open())
+            return;
+    }
+    std::string policy = ai->GetAiObjectContext()->GetValue<std::string>("pull policy")->Get();
+    Player* master = ai->GetMaster();
+    Player* tank = nullptr;
+    if (Group* group = bot->GetGroup())
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (member && member->IsInWorld() && member->GetMapId() == bot->GetMapId() &&
+                IsTankBot(member))
+            {
+                tank = member;
+                break;
+            }
+        }
+
+    s_moveLog << "{\"t\":" << uint64(std::time(nullptr))
+              << ",\"ms\":" << WorldTimer::getMSTime()
+              << ",\"actor\":\"" << bot->GetName() << "\""
+              << ",\"reason\":\"" << reason << "\""
+              << ",\"detail\":\"" << (detail ? detail : "") << "\""
+              << ",\"policy\":\"" << (policy.empty() ? "normal" : policy.c_str()) << "\""
+              << ",\"x\":" << bot->GetPositionX() << ",\"y\":" << bot->GetPositionY()
+              << ",\"z\":" << bot->GetPositionZ();
+    if (target)
+        s_moveLog << ",\"target\":\"" << target->GetName() << "\""
+                  << ",\"tx\":" << target->GetPositionX() << ",\"ty\":" << target->GetPositionY()
+                  << ",\"tz\":" << target->GetPositionZ()
+                  << ",\"los\":" << (bot->IsWithinLOSInMap(target) ? 1 : 0);
+    if (master && master->IsInWorld() && master->GetMapId() == bot->GetMapId())
+        s_moveLog << ",\"masterDist\":" << bot->GetDistance(master);
+    if (tank && tank != bot)
+        s_moveLog << ",\"tankDist\":" << bot->GetDistance(tank);
+    s_moveLog << "}\n";
+    s_moveLog.flush();
+}
+
+// stop an in-flight route spline (raw MoveSplineInit) or point move —
+// steer/hold/fast/come must not fight a launched leg toward the old goal
+void PartyExecutor::CancelRouteMovement(Player* bot)
+{
+    if (!bot->movespline->Finalized())
+        bot->StopMoving();
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        bot->GetMotionMaster()->Clear();
+}
+
+// "come to me": deterministic spatial recall. Postconditions, not
+// acknowledgements: keeps moving to the master's CURRENT position until 3D
+// distance <= 8y AND line of sight hold, with a 60s safety timeout.
+bool PartyExecutor::ComeToMasterTick(PlayerbotAI* ai, Player* bot)
+{
+    AiObjectContext* context = ai->GetAiObjectContext();
+    uint32 until = context->GetValue<uint32>("come to master until")->Get();
+    if (!until)
+        return false;
+
+    uint32 nowMs = WorldTimer::getMSTime();
+    Player* master = ai->GetMaster();
+    if (!master || !master->IsInWorld() || master->GetMapId() != bot->GetMapId() ||
+        nowMs > until)
+    {
+        context->GetValue<uint32>("come to master until")->Set(0);
+        LogMovementDecision(ai, bot, "come-timeout", nullptr, master);
+        return false;
+    }
+
+    if (bot->GetDistance(master) <= 8.0f && bot->IsWithinLOSInMap(master))
+    {
+        context->GetValue<uint32>("come to master until")->Set(0);
+        LogMovementDecision(ai, bot, "come-done", nullptr, master);
+        return false;
+    }
+
+    static std::map<uint32, uint32> s_lastComeMs;
+    uint32& lastMove = s_lastComeMs[bot->GetObjectGuid().GetCounter()];
+    if (!lastMove || nowMs - lastMove > 2000)
+    {
+        lastMove = nowMs;
+        CancelRouteMovement(bot);
+        bot->GetMotionMaster()->MovePoint(0, master->GetPositionX(), master->GetPositionY(),
+                                          master->GetPositionZ(), FORCED_MOVEMENT_RUN);
+        LogMovementDecision(ai, bot, "come", nullptr, master);
+    }
+    ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+    return true;
+}
+
 // melee dps belong behind the target (when someone else is tanking it)
 bool PartyExecutor::MeleeGetBehind(PlayerbotAI* ai, Player* bot, Unit* target)
 {
@@ -2059,6 +2192,7 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
                     lastRun = nowMs;
                     sLog.outBasic("TankRescue: %s running to %s (%u mobs on the backline)",
                                   bot->GetName(), anchor->GetName(), swarm);
+                    LogMovementDecision(ai, bot, "rescue", nullptr, anchor);
                     bot->GetMotionMaster()->MovePoint(0, anchor->GetPositionX(),
                         anchor->GetPositionY(), anchor->GetPositionZ(), FORCED_MOVEMENT_RUN);
                 }
@@ -2139,6 +2273,7 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
                 sLog.outBasic("TankGather: %s -> %s (dist %.0f, melee train %u)",
                               bot->GetName(), pick->GetName(),
                               sServerFacade.GetDistance2d(bot, pick), meleeCount);
+                LogMovementDecision(ai, bot, "gather", nullptr, pick);
                 bot->GetMotionMaster()->MovePoint(0, pick->GetPositionX(),
                     pick->GetPositionY(), pick->GetPositionZ(), FORCED_MOVEMENT_RUN);
                 return true;
@@ -3262,6 +3397,11 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     // 0. break hard cc with the pvp medallion (action self-gates: only
     // fires while stunned/feared/charmed/confused and off cooldown)
     if (ai->DoSpecificAction("use pvp trinket", Event(), true))
+        return;
+
+    // "come to me" continues even in combat — the human recalling the party
+    // through a door outranks the fight they are stuck in
+    if (ComeToMasterTick(ai, bot))
         return;
 
     // arena: the shot-caller watches the fight and calls plays unprompted

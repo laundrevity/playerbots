@@ -61,6 +61,10 @@ namespace
         "aggro), paladin = lay on hands to save a dying ally, hunter = feign death, druid = "
         "barkskin, mage = ice block. Only a spell that bot's class has.\n"
         "- use fires ONCE, immediately — omit it unless the moment needs it RIGHT NOW.\n"
+        "- come_to_me: set true on EVERY bot when the human wants the party AT their "
+        "position ('come to me', 'get inside', 'everyone in here'). The executor keeps "
+        "them moving until they truly stand beside the human with line of sight — never "
+        "answer such a request with words alone.\n"
         "- pulling goes on the TANK's directive and STICKS until changed: hold = park/follow "
         "without pulling ('stop pulling', 'hold', 'afk', 'brb', 'need mana'); steer = bypass "
         "the boss route and pull strictly where the human faces ('wrong way', 'turn around', "
@@ -104,6 +108,12 @@ namespace
             has("let me lead") || has("not crusader") || has("tank steer"))
             return {"steer", "Following your lead."};
 
+        // spatial recall: a true movement intent, not a policy — the party
+        // moves to the human until 3D proximity AND line of sight hold
+        if (has("come to me") || has("come here") || has("come inside") ||
+            has("in here") || has("get in here") || has("everyone in"))
+            return {"come", "Coming to you."};
+
         if (has("come back") || has("tank hold"))
             return {"hold", "Coming back and holding."};
 
@@ -134,8 +144,11 @@ namespace
                 {"src", "script"},
                 {"ttl_ms", 1500},
                 {"kill_order", json::array()},
-                {"pulling", intent.policy},
             };
+            if (strcmp(intent.policy, "come") == 0)
+                directive["come_to_me"] = true;   // movement intent, not a pace
+            else
+                directive["pulling"] = intent.policy;
             if (dispatched == 0)
                 directive["chat"] = {{"say", intent.reply}};
             sDirectiveMgr.Push(member->GetObjectGuid(), directive.dump(), DirectiveSource::Script,
@@ -198,6 +211,7 @@ namespace
                                              "lay on hands", "barkskin", "frenzied regeneration", "ice block"})}}},
               {"cooldowns", {{"type", "string"}, {"enum", json::array({"hold", "normal", "burn"})}}},
               {"pulling", {{"type", "string"}, {"enum", json::array({"hold", "normal", "fast", "steer"})}}},
+              {"come_to_me", {{"type", "boolean"}}},
               {"cc",
                {{"type", "array"},
                 {"items",
@@ -556,6 +570,9 @@ void ShotCaller::ProcessJob(const Job& job)
         if (entry.contains("pulling") && entry["pulling"].is_string() &&
             !entry["pulling"].get<std::string>().empty())
             directive["pulling"] = entry["pulling"];
+        if (entry.contains("come_to_me") && entry["come_to_me"].is_boolean() &&
+            entry["come_to_me"].get<bool>())
+            directive["come_to_me"] = true;
         if (entry.contains("cc"))
             directive["cc"] = entry["cc"];
         if (dispatched == 0 && !reply.empty())

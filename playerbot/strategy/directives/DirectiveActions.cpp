@@ -219,6 +219,22 @@ bool ApplyDirectiveAction::Execute(Event& event)
     {
         context->GetValue<std::string>("pull policy")->Set(incoming.pulling == "normal" ? "" : incoming.pulling);
         sLog.outBasic("Directive: %s pull policy '%s'", bot->GetName(), incoming.pulling.c_str());
+        // a policy that takes navigation away from the route must also stop
+        // an already-launched route leg (16:10: the spline kept flying)
+        if (incoming.pulling != "normal")
+        {
+            PartyExecutor::CancelRouteMovement(bot);
+            PartyExecutor::LogMovementDecision(ai, bot, "route-cancel", incoming.pulling.c_str(), nullptr);
+        }
+    }
+
+    // "come_to_me": deterministic spatial recall — arm the executor's
+    // move-to-master loop (postconditions: 3D proximity + LoS, 60s timeout)
+    if (incoming.comeToMaster)
+    {
+        context->GetValue<uint32>("come to master until")->Set(WorldTimer::getMSTime() + 60000);
+        PartyExecutor::CancelRouteMovement(bot);
+        PartyExecutor::LogMovementDecision(ai, bot, "come-armed", nullptr, GetMaster());
     }
 
     // "use": one-shot emergency cooldown from the shot-caller ("oh shit"
