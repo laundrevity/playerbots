@@ -5,6 +5,10 @@
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/strategy/directives/Consumables.h"
+#include "playerbot/strategy/values/NearestGameObjects.h"
+#include "Grids/GridNotifiers.h"
+#include "Grids/GridNotifiersImpl.h"
+#include "Grids/CellImpl.h"
 #include "playerbot/strategy/directives/DirectiveMgr.h"
 #include "playerbot/strategy/directives/DirectiveValues.h"
 #include "playerbot/strategy/directives/ShotCaller.h"
@@ -97,6 +101,45 @@ namespace
             for (Unit* attacker : member->getAttackers())
                 add(attacker);
         }
+    }
+
+    // The server never collides units with gameobjects: a closed door
+    // exists only client-side, so bot splines walk straight through
+    // portcullises the human cannot pass (observed at the live-side Market
+    // Row gate). Movement legs that cross a closed DOOR are refused.
+    bool SegmentNearPoint2D(float x1, float y1, float x2, float y2,
+                            float px, float py, float tolerance)
+    {
+        float dx = x2 - x1, dy = y2 - y1;
+        float lengthSq = dx * dx + dy * dy;
+        float t = 0.0f;
+        if (lengthSq > 0.0001f)
+        {
+            t = ((px - x1) * dx + (py - y1) * dy) / lengthSq;
+            t = std::max(0.0f, std::min(1.0f, t));
+        }
+        float cx = x1 + t * dx, cy = y1 + t * dy;
+        float ddx = px - cx, ddy = py - cy;
+        return ddx * ddx + ddy * ddy <= tolerance * tolerance;
+    }
+
+    bool PathCrossesClosedDoor(Player* bot, float destX, float destY)
+    {
+        std::list<GameObject*> gos;
+        AnyGameObjectInObjectRangeCheck check(bot, 60.0f);
+        MaNGOS::GameObjectListSearcher<AnyGameObjectInObjectRangeCheck> searcher(gos, check);
+        Cell::VisitAllObjects((const WorldObject*)bot, searcher, 60.0f);
+        for (GameObject* go : gos)
+        {
+            if (go->GetGoType() != GAMEOBJECT_TYPE_DOOR)
+                continue;
+            if (go->GetGoState() != GO_STATE_READY)
+                continue;   // open door
+            if (SegmentNearPoint2D(bot->GetPositionX(), bot->GetPositionY(),
+                                   destX, destY, go->GetPositionX(), go->GetPositionY(), 4.0f))
+                return true;
+        }
+        return false;
     }
 
     // wand churn guard: 17:24 run had 26 Shoot starts and ONE completion —
@@ -873,6 +916,14 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     const PointsArray& points = pathfinder.getPath();
     if (points.size() < 2)
         return false;
+
+    for (size_t i = 1; i < points.size(); ++i)
+        if (PathCrossesClosedDoor(bot, points[i].x, points[i].y))
+        {
+            LogMovementDecision(ai, bot, "door-blocked", "route", objectiveUnit);
+            ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+            return true;    // stand until the door opens
+        }
 
     Movement::MoveSplineInit init(*bot);
     init.MovebyPath(points);
@@ -2142,6 +2193,12 @@ bool PartyExecutor::ComeToMasterTick(PlayerbotAI* ai, Player* bot)
     if (!lastMove || nowMs - lastMove > 2000)
     {
         lastMove = nowMs;
+        if (PathCrossesClosedDoor(bot, master->GetPositionX(), master->GetPositionY()))
+        {
+            LogMovementDecision(ai, bot, "door-blocked", "come", master);
+            ai->SetAIInternalUpdateDelay(IDLE_DELAY_MS);
+            return true;    // wait at the door; retry while armed
+        }
         CancelRouteMovement(bot);
         bot->GetMotionMaster()->MovePoint(0, master->GetPositionX(), master->GetPositionY(),
                                           master->GetPositionZ(), FORCED_MOVEMENT_RUN);
@@ -3612,9 +3669,14 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
                             if (!lastLeash || nowMs - lastLeash > 3000)
                             {
                                 lastLeash = nowMs;
-                                LogMovementDecision(ai, bot, "leash-return", nullptr, member);
-                                bot->GetMotionMaster()->MovePoint(0, member->GetPositionX(),
-                                    member->GetPositionY(), member->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                                if (PathCrossesClosedDoor(bot, member->GetPositionX(), member->GetPositionY()))
+                                    LogMovementDecision(ai, bot, "door-blocked", "leash-return", member);
+                                else
+                                {
+                                    LogMovementDecision(ai, bot, "leash-return", nullptr, member);
+                                    bot->GetMotionMaster()->MovePoint(0, member->GetPositionX(),
+                                        member->GetPositionY(), member->GetPositionZ(), FORCED_MOVEMENT_RUN);
+                                }
                             }
                         }
                         break;
