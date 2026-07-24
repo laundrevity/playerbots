@@ -24,6 +24,7 @@
 #include <cmath>
 #include <fstream>
 #include <map>
+#include <set>
 #include <vector>
 
 using namespace ai;
@@ -64,6 +65,27 @@ namespace
                 return false;   // let the mana users drink
         }
         return true;
+    }
+
+    // role sensor for everything tank-shaped in this file: the strategy-list
+    // answer, OR a warrior sitting in Defensive Stance (aura 71). The modern
+    // 3/31/17 dual-wield tank reads as FURY by talent tab and would lose the
+    // whole tank kit on respec — but any warrior tanking lives in defensive
+    // stance (Defiance requires it), so the stance is the honest signal.
+    bool IsTankBot(Player* player)
+    {
+        // sticky per session: charge-pulls flip to battle stance for a moment
+        // and the role must not flap to dps mid-pull (nobody would flip the
+        // stance back)
+        static std::set<uint32> knownTanks;
+        uint32 counter = player->GetObjectGuid().GetCounter();
+        if (PlayerbotAI::IsTank(player) ||
+            (player->getClass() == CLASS_WARRIOR && player->HasAura(71)))
+        {
+            knownTanks.insert(counter);
+            return true;
+        }
+        return knownTanks.count(counter) != 0;
     }
 
     // rogue poison upkeep (DB-verified 2.4.3 top ranks)
@@ -508,7 +530,7 @@ bool PartyExecutor::Cast(PlayerbotAI* ai, const char* spell, Unit* target)
 
 bool PartyExecutor::TryChargePull(PlayerbotAI* ai, Player* bot)
 {
-    if (bot->getClass() != CLASS_WARRIOR || !PlayerbotAI::IsTank(bot))
+    if (bot->getClass() != CLASS_WARRIOR || !IsTankBot(bot))
         return false;
 
     // pull order = the human's skull, or the brain's kill order
@@ -589,7 +611,7 @@ bool PartyExecutor::KeepPartyBuffed(PlayerbotAI* ai, Player* bot)
                 return true;
 
     // prot paladin: Righteous Fury goes up before the first pull, not after
-    if (cls == CLASS_PALADIN && PlayerbotAI::IsTank(bot) &&
+    if (cls == CLASS_PALADIN && IsTankBot(bot) &&
         !ai->HasAura("righteous fury", bot) && Cast(ai, "righteous fury", bot))
         return true;
 
@@ -668,7 +690,7 @@ bool PartyExecutor::KeepPartyBuffed(PlayerbotAI* ai, Player* bot)
 // saying "hold") is the human's brake.
 bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
 {
-    if (!PlayerbotAI::IsTank(bot))
+    if (!IsTankBot(bot))
         return false;
     if (HoldPolicy(ai))
         return false;   // "hold" in party chat parks the tank
@@ -790,9 +812,9 @@ void PartyExecutor::ReloadRoutes()
 // nobody in combat, nobody eating/low, healer has mana, party in tow.
 bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
 {
-    if (bot->getClass() != CLASS_WARRIOR && !PlayerbotAI::IsTank(bot))
+    if (bot->getClass() != CLASS_WARRIOR && !IsTankBot(bot))
         return false;
-    if (!PlayerbotAI::IsTank(bot))
+    if (!IsTankBot(bot))
         return false;
     AiObjectContext* context = ai->GetAiObjectContext();
     std::string pullPolicy = context->GetValue<std::string>("pull policy")->Get();
@@ -899,7 +921,7 @@ bool PartyExecutor::FollowLeader(PlayerbotAI* ai, Player* bot)
         {
             Player* member = itr->getSource();
             if (member && member != bot && member->IsInWorld() && member->IsAlive() &&
-                member->GetMapId() == bot->GetMapId() && PlayerbotAI::IsTank(member) &&
+                member->GetMapId() == bot->GetMapId() && IsTankBot(member) &&
                 member->GetPlayerbotAI())
             {
                 leader = member;
@@ -1416,7 +1438,7 @@ Unit* PartyExecutor::LooseMobOnParty(PlayerbotAI* ai, Player* bot)
         Player* member = victim->IsPlayer() ? (Player*)victim : nullptr;
         if (!member || !bot->GetGroup() || member->GetGroup() != bot->GetGroup())
             continue;
-        if (PlayerbotAI::IsTank(member))
+        if (IsTankBot(member))
             continue;
         return attacker;
     }
@@ -1470,7 +1492,7 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
             return called;
 
     // 3c. role default
-    if (PlayerbotAI::IsTank(bot))
+    if (IsTankBot(bot))
     {
         // emergency first, then keep the pack glued via lowest-threat cycling
         if (Unit* loose = LooseMobOnParty(ai, bot))
@@ -1518,7 +1540,7 @@ Unit* PartyExecutor::PickTarget(PlayerbotAI* ai, Player* bot)
         for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
             Player* member = itr->getSource();
-            if (member && member != bot && member->IsInWorld() && PlayerbotAI::IsTank(member))
+            if (member && member != bot && member->IsInWorld() && IsTankBot(member))
                 if (Unit* tanked = member->GetVictim())
                     if (!sServerFacade.UnitIsDead(tanked))
                         return tanked;
@@ -1733,12 +1755,12 @@ void PartyExecutor::DpsIdleProbe(PlayerbotAI* ai, Player* bot, const char* why)
 
 bool PartyExecutor::ThreatCapped(PlayerbotAI* ai, Player* bot, Unit* target)
 {
-    if (PlayerbotAI::IsTank(bot))
+    if (IsTankBot(bot))
         return false;
     if (target->GetHealthPercent() < 20.0f)
         return false;   // execute window: it dies before threat matters
     Unit* tank = target->GetVictim();
-    if (!tank || tank == bot || !tank->IsPlayer() || !PlayerbotAI::IsTank((Player*)tank))
+    if (!tank || tank == bot || !tank->IsPlayer() || !IsTankBot((Player*)tank))
         return false;   // nobody tanking it: no ceiling to respect
     float mine = target->getThreatManager().getThreat(bot);
     float tanks = target->getThreatManager().getThreat(tank);
@@ -1753,7 +1775,7 @@ bool PartyExecutor::ThreatCapped(PlayerbotAI* ai, Player* bot, Unit* target)
 // melee dps belong behind the target (when someone else is tanking it)
 bool PartyExecutor::MeleeGetBehind(PlayerbotAI* ai, Player* bot, Unit* target)
 {
-    if (ai->IsRanged(bot) || PlayerbotAI::IsTank(bot))
+    if (ai->IsRanged(bot) || IsTankBot(bot))
         return false;
     if (target->IsPlayer())
         return false;   // never chase a moving player's back: the reposition
@@ -1947,7 +1969,11 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
 
     // Shield Slam > Revenge > Devastate/Sunder, Demo + Battle Shout on packs,
     // Heroic Strike/Cleave as the true-excess rage dump (icy-veins classic
-    // prot priority; HS replaces the next auto WHICH THEN YIELDS NO RAGE)
+    // prot priority; HS replaces the next auto WHICH THEN YIELDS NO RAGE).
+    // Bloodthirst first for the 3/31/17 dual-wield tank (self-gates: sword-
+    // and-board prot doesn't know it, shield casts fail without a shield)
+    if (Cast(ai, "bloodthirst", target))
+        return true;
     if (Cast(ai, "shield slam", target))
         return true;
     if (Cast(ai, "revenge", target))
@@ -2997,11 +3023,11 @@ void PartyExecutor::CombatTick(PlayerbotAI* ai, Player* bot)
     bool acted = false;
     switch (bot->getClass())
     {
-        case CLASS_WARRIOR: acted = PlayerbotAI::IsTank(bot) ? TankWarriorTick(ai, bot, target)
+        case CLASS_WARRIOR: acted = IsTankBot(bot) ? TankWarriorTick(ai, bot, target)
                                                             : ArmsWarriorTick(ai, bot, target); break;
         case CLASS_ROGUE:   acted = RogueTick(ai, bot, target); break;
         case CLASS_MAGE:    acted = MageTick(ai, bot, target); break;
-        case CLASS_PALADIN: acted = PlayerbotAI::IsTank(bot) ? ProtPaladinTick(ai, bot, target)
+        case CLASS_PALADIN: acted = IsTankBot(bot) ? ProtPaladinTick(ai, bot, target)
                                                             : RetPaladinTick(ai, bot, target); break;
         case CLASS_WARLOCK: acted = WarlockTick(ai, bot, target); break;
         case CLASS_PRIEST:  acted = ShadowPriestTick(ai, bot, target); break;
