@@ -54,6 +54,12 @@ namespace
         "- directives may only name the LISTED BOTS — never the human.\n"
         "- sometimes you get a Situation line instead of chat: that is you noticing the fight "
         "state on your own — make the call unprompted.\n"
+        "- dungeon Situations are emergencies (someone critical or dead, a huge pull): set "
+        "cooldowns=burn when the fix is killing faster, and set use on the ONE bot whose "
+        "defensive saves the moment: tank warrior = shield wall or last stand, rogue = evasion "
+        "(or vanish to dump aggro), paladin = lay on hands to save a dying ally, hunter = feign "
+        "death, druid = barkskin, mage = ice block. Only a spell that bot's class has.\n"
+        "- use fires ONCE, immediately — omit it unless the moment needs it RIGHT NOW.\n"
         "- reply: ONE short casual party-chat answer, like a terse guildmate (max 12 words, "
         "no roleplay flourishes, no emoji).";
 
@@ -112,6 +118,10 @@ namespace
                   {"spell", {{"type", "string"},
                              {"enum", json::array({"kings", "might", "wisdom", "light", "salvation", "sanctuary"})}}}}},
                 {"required", json::array({"target", "spell"})}}},
+              {"use", {{"type", "string"},
+                       {"enum", json::array({"shield wall", "last stand", "shield block", "evasion",
+                                             "vanish", "feign death", "divine protection", "divine shield",
+                                             "lay on hands", "barkskin", "frenzied regeneration", "ice block"})}}},
               {"cooldowns", {{"type", "string"}, {"enum", json::array({"hold", "normal", "burn"})}}},
               {"cc",
                {{"type", "array"},
@@ -161,7 +171,10 @@ void ShotCaller::ArenaTick(PlayerbotAI* ai, Player* bot)
 {
     if (!sPlayerbotAIConfig.shotCallerEnabled || !sPlayerbotAIConfig.directiveEnabled)
         return;
-    if (!bot->InArena())
+    // autonomous ("Situation") calls run in arenas and in mastered dungeon
+    // runs — chat-driven calls have no such gate
+    bool arena = bot->InArena();
+    if (!arena && (bot->InBattleGround() || !bot->GetMap()->IsDungeon()))
         return;
 
     Player* master = ai->GetMaster();
@@ -170,47 +183,92 @@ void ShotCaller::ArenaTick(PlayerbotAI* ai, Player* bot)
 
     constexpr uint32 AUTO_CALL_GAP_MS = 8000;       // one autonomous call per gap
     constexpr uint32 AUTO_RECALL_GAP_MS = 20000;    // same subject not re-called sooner
+    constexpr uint32 SUBJECT_PACK = 0xFFFFFFF0;     // sentinel: big-pull trigger (no guid counter up here)
 
     uint32 now = WorldTimer::getMSTime();
     uint32 last = m_lastAutoMs.load();
     if (last && WorldTimer::getMSTimeDiff(last, now) < AUTO_CALL_GAP_MS)
         return;
 
-    // edge triggers, most urgent first: a kill window, then an ally folding
+    // edge triggers, most urgent first
     std::ostringstream reason;
     uint32 subject = 0;
+    uint32 recallGapMs = AUTO_RECALL_GAP_MS;
 
     AiObjectContext* context = ai->GetAiObjectContext();
-    std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
-    for (const ObjectGuid& guid : possible)
+    if (arena)
     {
-        Unit* enemy = ai->GetUnit(guid);
-        if (!enemy || !enemy->IsPlayer() || !enemy->IsAlive())
-            continue;
-        if (enemy->GetHealthPercent() < 35.0f)
+        // arena: a kill window, then an ally folding
+        std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+        for (const ObjectGuid& guid : possible)
         {
-            reason << "Enemy " << enemy->GetName() << " is at " << uint32(enemy->GetHealthPercent())
-                   << "% hp — kill window.";
-            subject = guid.GetCounter();
-            break;
+            Unit* enemy = ai->GetUnit(guid);
+            if (!enemy || !enemy->IsPlayer() || !enemy->IsAlive())
+                continue;
+            if (enemy->GetHealthPercent() < 35.0f)
+            {
+                reason << "Enemy " << enemy->GetName() << " is at " << uint32(enemy->GetHealthPercent())
+                       << "% hp — kill window.";
+                subject = guid.GetCounter();
+                break;
+            }
+        }
+        if (!subject)
+        {
+            if (Group* group = bot->GetGroup())
+            {
+                for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+                {
+                    Player* member = itr->getSource();
+                    if (!member || !member->IsInWorld() || !member->IsAlive())
+                        continue;
+                    if (member->GetHealthPercent() < 40.0f)
+                    {
+                        reason << "Our " << member->GetName() << " is at " << uint32(member->GetHealthPercent())
+                               << "% hp and under pressure — call the response.";
+                        subject = member->GetObjectGuid().GetCounter();
+                        break;
+                    }
+                }
+            }
         }
     }
-    if (!subject)
+    else if (bot->IsInCombat())
     {
-        if (Group* group = bot->GetGroup())
+        // dungeon "oh shit" detection: a death mid-fight, someone critical,
+        // or a pull too big for the normal rotation
+        Group* group = bot->GetGroup();
+        if (!group)
+            return;
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr && !subject; itr = itr->next())
         {
-            for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            Player* member = itr->getSource();
+            if (!member || !member->IsInWorld())
+                continue;
+            if (!member->IsAlive())
             {
-                Player* member = itr->getSource();
-                if (!member || !member->IsInWorld() || !member->IsAlive())
-                    continue;
-                if (member->GetHealthPercent() < 40.0f)
-                {
-                    reason << "Our " << member->GetName() << " is at " << uint32(member->GetHealthPercent())
-                           << "% hp and under pressure — call the response.";
-                    subject = member->GetObjectGuid().GetCounter();
-                    break;
-                }
+                reason << "Situation: " << member->GetName()
+                       << " just DIED mid-fight — call the recovery (burn, defensives, retarget).";
+                subject = member->GetObjectGuid().GetCounter();
+                recallGapMs = 60000;    // a corpse stays down; don't re-call it every 20s
+            }
+            else if (member->GetHealthPercent() < 30.0f)
+            {
+                reason << "Situation: " << member->GetName() << " is at "
+                       << uint32(member->GetHealthPercent())
+                       << "% hp and falling — emergency, call the save.";
+                subject = member->GetObjectGuid().GetCounter();
+            }
+        }
+        if (!subject)
+        {
+            std::list<ObjectGuid> attackers = context->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+            if (attackers.size() >= 5)
+            {
+                reason << "Situation: big pull — " << uint32(attackers.size())
+                       << " mobs on the party. Call cooldowns and the kill order.";
+                subject = SUBJECT_PACK;
+                recallGapMs = 45000;
             }
         }
     }
@@ -220,7 +278,7 @@ void ShotCaller::ArenaTick(PlayerbotAI* ai, Player* bot)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         uint32& stamp = m_recentAutoCalls[subject];
-        if (stamp && WorldTimer::getMSTimeDiff(stamp, now) < AUTO_RECALL_GAP_MS)
+        if (stamp && WorldTimer::getMSTimeDiff(stamp, now) < recallGapMs)
             return;
         stamp = now;
     }
@@ -411,6 +469,9 @@ void ShotCaller::ProcessJob(const Job& job)
 
         if (entry.contains("blessing") && entry["blessing"].is_object())
             directive["blessing"] = entry["blessing"];
+        if (entry.contains("use") && entry["use"].is_string() &&
+            !entry["use"].get<std::string>().empty())
+            directive["use"] = entry["use"];
         if (entry.contains("cc"))
             directive["cc"] = entry["cc"];
         if (dispatched == 0 && !reply.empty())

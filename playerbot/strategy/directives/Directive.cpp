@@ -158,6 +158,7 @@ bool ParseDirective(const std::string& text, Directive& out, std::string& error)
     }
 
     out.giveHealthstoneTo = GetString(j, "give_healthstone_to");
+    out.useSpell = GetString(j, "use");
 
     auto blessing = j.find("blessing");
     if (blessing != j.end() && blessing->is_object())

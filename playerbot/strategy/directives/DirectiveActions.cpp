@@ -7,6 +7,7 @@
 #include "playerbot/ServerFacade.h"
 #include "playerbot/strategy/directives/DirectiveMgr.h"
 #include "playerbot/strategy/directives/DirectiveValues.h"
+#include "playerbot/strategy/directives/PartyExecutor.h"
 #include "playerbot/thirdparty/nlohmann/json.hpp"
 
 #include "Combat/CombatEventLog.h"
@@ -207,6 +208,49 @@ bool ApplyDirectiveAction::Execute(Event& event)
                           bot->GetName(), ba.targetName.c_str(), ba.spell.c_str());
         }
         context->GetValue<std::string>("blessing overrides")->Set(overrides);
+    }
+
+    // "use": one-shot emergency cooldown from the shot-caller ("oh shit"
+    // moments). Whitelisted here; legality (known, off cooldown, resources)
+    // stays with the normal cast path. Lay on Hands picks the most hurt ally.
+    if (!incoming.useSpell.empty())
+    {
+        static const char* const EMERGENCY_SPELLS[] = {
+            "shield wall", "last stand", "shield block", "evasion", "vanish",
+            "feign death", "divine protection", "divine shield", "lay on hands",
+            "barkskin", "frenzied regeneration", "ice block"};
+        bool allowed = false;
+        for (const char* spell : EMERGENCY_SPELLS)
+            if (SameNameNoCase(spell, incoming.useSpell.c_str()))
+            {
+                allowed = true;
+                break;
+            }
+        if (allowed)
+        {
+            Unit* target = bot;
+            if (SameNameNoCase(incoming.useSpell.c_str(), "lay on hands") && bot->GetGroup())
+            {
+                float lowest = 100.0f;
+                for (GroupReference* itr = bot->GetGroup()->GetFirstMember(); itr != nullptr; itr = itr->next())
+                {
+                    Player* member = itr->getSource();
+                    if (!member || !member->IsInWorld() || !member->IsAlive())
+                        continue;
+                    if (member->GetHealthPercent() < lowest)
+                    {
+                        lowest = member->GetHealthPercent();
+                        target = member;
+                    }
+                }
+            }
+            bool ok = PartyExecutor::Cast(ai, incoming.useSpell.c_str(), target);
+            sLog.outBasic("Directive: %s use '%s' on %s -> %s", bot->GetName(),
+                          incoming.useSpell.c_str(), target->GetName(), ok ? "cast" : "not castable now");
+        }
+        else
+            sLog.outBasic("Directive: %s use '%s' rejected (not on the emergency whitelist)",
+                          bot->GetName(), incoming.useSpell.c_str());
     }
 
     Report(incoming, true, note);

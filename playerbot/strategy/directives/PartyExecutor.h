@@ -40,12 +40,11 @@ namespace ai
         static bool ShouldOwn(PlayerbotAI* ai, Player* bot);
         static void Tick(PlayerbotAI* ai, Player* bot);
         static void ReloadRoutes();     // ".bot reload" re-reads party_routes.json
+        static bool Cast(PlayerbotAI* ai, const char* spell, Unit* target);   // also the "use" directive's cast path
 
     private:
         static void CombatTick(PlayerbotAI* ai, Player* bot);
         static void NonCombatTick(PlayerbotAI* ai, Player* bot);
-
-        static bool Cast(PlayerbotAI* ai, const char* spell, Unit* target);
         static bool KeepCcApplied(PlayerbotAI* ai, Player* bot);
         static bool TryInterrupt(PlayerbotAI* ai, Player* bot, Unit* target);
         static Unit* LooseMobOnParty(PlayerbotAI* ai, Player* bot);
