@@ -2375,13 +2375,18 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
     // targets" (the latter came up empty all night).
     if (!target->IsPlayer() && target->GetVictim() && target->GetVictim() != bot)
     {
-        uint32 packed = 0;
+        uint32 packed = 0, heldByTank = 0;
         std::list<ObjectGuid> hostiles = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
         for (const ObjectGuid& guid : hostiles)
             if (Unit* mob = ai->GetUnit(guid))
                 if (!mob->IsPlayer() && mob->IsAlive() &&
                     mob->GetDistance(target) < 10.0f)
+                {
                     ++packed;
+                    Unit* victim = mob->GetVictim();
+                    if (victim && victim->IsPlayer() && IsTankBot((Player*)victim))
+                        ++heldByTank;
+                }
         if (target->IsAlive() && !target->IsPlayer())
             packed = packed > 0 ? packed : 1;   // target itself counts
         uint32 maxMana = bot->GetMaxPower(POWER_MANA);
@@ -2397,8 +2402,11 @@ bool PartyExecutor::MageTick(PlayerbotAI* ai, Player* bot, Unit* target)
             }
         }
         // 40% floor: blizzard is 1400 mana a cast — the 30% gate let her AoE
-        // herself dry and drink for 20s a pull (12 drinks in 10 min)
-        if (packed >= 3 && maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 40)
+        // herself dry and drink for 20s a pull (12 drinks in 10 min).
+        // Tank-held gate: AoE into a pack the tank hasn't established yet
+        // hands the mage 3-4 mobs ('mage would blizzard once, pull aggro')
+        if (packed >= 3 && heldByTank * 2 >= packed &&
+            maxMana && bot->GetPower(POWER_MANA) * 100 / maxMana > 40)
         {
             if (Cast(ai, "blizzard", target))
                 return true;
