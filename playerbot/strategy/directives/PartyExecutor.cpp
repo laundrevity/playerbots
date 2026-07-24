@@ -1105,20 +1105,20 @@ void PartyExecutor::NonCombatTick(PlayerbotAI* ai, Player* bot)
         if (bot->GetPower(POWER_MANA) * 10 >= bot->GetMaxPower(POWER_MANA) * 7 &&
             !FindBagItem(bot, MANA_GEM_IDS, sizeof(MANA_GEM_IDS) / sizeof(uint32)))
         {
-            if (Cast(ai, "conjure mana ruby", bot))
+#ifdef MANGOSBOT_ZERO
+            // by spell id: the chat-helper name index resolved these
+            // unreliably (known ruby refused DONT_REPORT while an unknown
+            // jade cast fine). ruby 10054 > citrine 10053 > jade 3552 > agate 759.
+            if (ai->CastSpell(10054u, bot) || ai->CastSpell(10053u, bot) ||
+                ai->CastSpell(3552u, bot) || ai->CastSpell(759u, bot))
                 return;
-            // ruby still refused at 70%+ mana even after the gate — name the
-            // reason before falling through to a worse gem
-            {
-                SpellCastResult rubyResult = SPELL_CAST_OK;
-                ai->CanCastSpell("conjure mana ruby", bot, 0, nullptr, false, false, false, &rubyResult);
-                sLog.outBasic("MageGem: %s conjure ruby refused (result=%u, mana=%u/%u)",
-                              bot->GetName(), uint32(rubyResult),
-                              bot->GetPower(POWER_MANA), bot->GetMaxPower(POWER_MANA));
-            }
-            if (Cast(ai, "conjure mana citrine", bot) ||
+            sLog.outBasic("MageGem: %s all gem conjures refused (mana=%u/%u)",
+                          bot->GetName(), bot->GetPower(POWER_MANA), bot->GetMaxPower(POWER_MANA));
+#else
+            if (Cast(ai, "conjure mana ruby", bot) || Cast(ai, "conjure mana citrine", bot) ||
                 Cast(ai, "conjure mana jade", bot) || Cast(ai, "conjure mana agate", bot))
                 return;
+#endif
         }
     }
 

@@ -4249,13 +4249,15 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, uint8 effectMask, b
 	//bot->SetSelectionGuid(target->GetObjectGuid());
 	Spell *spell = new Spell(bot, spellInfo, false);
 
-    spell->m_targets.setUnitTarget(target);
     spell->SetCastItem(itemTarget ? itemTarget : aiObjectContext->GetValue<Item*>("item for spell", spellid)->Get());
     spell->m_targets.setItemTarget(spell->GetCastItem());
 
-    // dest-targeted spells (Blizzard, Flamestrike, Rain of Fire): CheckCast
-    // with no destination always fails, which vetoed every executor AoE cast
-    // before CastSpell's (correct) dest fill could ever run — mirror it here
+    // dest-targeted spells (Blizzard, Flamestrike, Rain of Fire): validate
+    // at the LOCATION with no unit target, exactly like the real cast — a
+    // unit target drags per-mob checks into an area cast (snare-immune
+    // undead made blizzard refuse PREVENTED_BY_MECHANIC via the anchor mob)
+    if (!(spellInfo->Targets & TARGET_FLAG_DEST_LOCATION))
+        spell->m_targets.setUnitTarget(target);
     if (spellInfo->Targets & TARGET_FLAG_DEST_LOCATION)
     {
         WorldLocation aoe = aiObjectContext->GetValue<WorldLocation>("aoe position")->Get();
