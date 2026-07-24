@@ -86,7 +86,45 @@ namespace
             knownTanks.insert(counter);
             return true;
         }
-        return knownTanks.count(counter) != 0;
+        if (knownTanks.count(counter))
+            return true;
+
+        // adoption: a 3/31/17-style warrior reads FURY by tab and may log in
+        // outside defensive stance — the horde group then had NO tank and
+        // nobody ever pulled. Deep prot investment (Defiance depth, 11+
+        // points) claims the role when no group member holds it yet.
+        if (player->getClass() == CLASS_WARRIOR && player->GetPlayerbotAI())
+        {
+            static std::set<uint32> adoptionChecked;
+            if (!adoptionChecked.count(counter))
+            {
+                adoptionChecked.insert(counter);
+                bool groupHasTank = false;
+                if (Group* group = player->GetGroup())
+                    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+                    {
+                        Player* member = itr->getSource();
+                        if (!member || member == player)
+                            continue;
+                        if (knownTanks.count(member->GetObjectGuid().GetCounter()) ||
+                            PlayerbotAI::IsTank(member) ||
+                            (member->getClass() == CLASS_WARRIOR && member->HasAura(71)))
+                        {
+                            groupHasTank = true;
+                            break;
+                        }
+                    }
+                std::map<uint32, int32> tabs = AiFactory::GetPlayerSpecTabs(player);
+                if (!groupHasTank && tabs[2] >= 11)
+                {
+                    knownTanks.insert(counter);
+                    sLog.outBasic("PartyExecutor: %s adopts TANK role (prot depth %d, no other tank)",
+                                  player->GetName(), tabs[2]);
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // rogue poison upkeep (DB-verified 2.4.3 top ranks)
