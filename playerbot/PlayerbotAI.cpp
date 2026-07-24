@@ -3043,8 +3043,26 @@ ChatChannelSource PlayerbotAI::GetChatChannelSource(Player* bot, uint32 type, st
     return ChatChannelSource::SRC_UNDEFINED;
 }
 
+
+// The 1.12 client runs format() over chat message bodies (ChatFrame.lua:1453):
+// a stray % in bot/LLM text becomes a format specifier and hard-errors the UI.
+// Escape every % before anything a bot speaks reaches a client.
+static std::string EscapeChatFormat(const std::string& msg)
+{
+    std::string safe;
+    safe.reserve(msg.size());
+    for (std::string::const_iterator it = msg.begin(); it != msg.end(); ++it)
+    {
+        safe += *it;
+        if (*it == '%')
+            safe += '%';
+    }
+    return safe;
+}
+
 bool PlayerbotAI::SayToGuild(std::string msg, bool likePlayer)
 {
+    msg = EscapeChatFormat(msg);
     if (msg.empty())
     {
         return false;
@@ -3330,6 +3348,7 @@ bool PlayerbotAI::SayToGuildRecruitment(std::string msg)
 
 bool PlayerbotAI::SayToParty(std::string msg, bool likePlayer)
 {
+    msg = EscapeChatFormat(msg);
     if (!bot->GetGroup())
     {
         return false;
@@ -3371,6 +3390,7 @@ bool PlayerbotAI::SayToParty(std::string msg, bool likePlayer)
 
 bool PlayerbotAI::SayToRaid(std::string msg)
 {
+    msg = EscapeChatFormat(msg);
     if (!bot->GetGroup() || !bot->GetGroup()->IsRaidGroup())
     {
         return false;
@@ -3460,6 +3480,7 @@ bool PlayerbotAI::Say(std::string msg, bool likePlayer)
 
 bool PlayerbotAI::Whisper(std::string msg, std::string receiverName, bool likePlayer)
 {
+    msg = EscapeChatFormat(msg);
     ObjectGuid receiver = sObjectMgr.GetPlayerGuidByName(receiverName);
     Player* rPlayer = sObjectMgr.GetPlayer(receiver);
 
@@ -3491,6 +3512,7 @@ bool PlayerbotAI::Whisper(std::string msg, std::string receiverName, bool likePl
 
 bool PlayerbotAI::TellPlayerNoFacing(Player* player, std::string text, PlayerbotSecurityLevel securityLevel, bool isPrivate, bool noRepeat, bool ignoreSilent)
 {
+    text = EscapeChatFormat(text);
     if(!player)
         return false;
 
