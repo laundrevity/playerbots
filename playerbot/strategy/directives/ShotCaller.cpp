@@ -541,7 +541,11 @@ void ShotCaller::ProcessJob(const Job& job)
           {"json_schema",
            {{"name", "shotcall"},
             {"schema", ResponseSchema(botNames, targetIds, job.partyNames)}}}}},
-        {"max_tokens", 400},
+        {"max_tokens", 700},   // hitting the cap truncates mid-JSON and reads
+                               // as a schema failure — measured gen_n pinned
+                               // at the cap on the bench. Real fix is a terser
+                               // output schema (id-only kill orders); this
+                               // stops the bleeding meanwhile.
         {"temperature", 0.3},
         {"top_p", 0.8},
     };
