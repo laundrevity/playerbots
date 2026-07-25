@@ -775,6 +775,8 @@ bool PartyExecutor::TryChargePull(PlayerbotAI* ai, Player* bot)
     float distance = sServerFacade.GetDistance2d(bot, target);
     if (distance < 8.0f || distance > 24.0f)
         return false;   // charge envelope
+    if (PathCrossesClosedDoor(bot, target->GetPositionX(), target->GetPositionY()))
+        return false;   // a charge spline goes straight through closed doors
 
     // charge needs battle stance; combat tick flips back to defensive
     if (!ai->HasAura("battle stance", bot) && Cast(ai, "battle stance", bot))
@@ -967,6 +969,19 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     if (!objective)
         return false;   // route cleared — dungeon done
 
+    // locality gate: a flat forward-only boss list cannot drive a partial
+    // or reverse run. Undead-side Strat: the first alive objective was
+    // Willey (live side, far west) and the route marched the tank at him —
+    // an objective far from the HUMAN is not this run's objective. Cone
+    // steering (AutoAdvance) takes over instead.
+    {
+        float mdx = objective->x - master->GetPositionX();
+        float mdy = objective->y - master->GetPositionY();
+        float mdz = objective->z - master->GetPositionZ();
+        if (mdx * mdx + mdy * mdy + mdz * mdz > 150.0f * 150.0f)
+            return false;
+    }
+
     float objX = objectiveUnit ? objectiveUnit->GetPositionX() : objective->x;
     float objY = objectiveUnit ? objectiveUnit->GetPositionY() : objective->y;
     float objZ = objectiveUnit ? objectiveUnit->GetPositionZ() : objective->z;
@@ -997,6 +1012,9 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
             continue;
         if ((dx * hx + dy * hy) / distance < 0.25f)
             continue;   // outside the cone
+        if (PathCrossesClosedDoor(bot, candidate->GetPositionX(), candidate->GetPositionY()))
+            continue;   // behind a closed door: not pullable (charge splines
+                        // ignore doors entirely — the westward gate zap)
         best = distance;
         pick = candidate;
     }
@@ -1027,7 +1045,14 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     for (size_t i = 1; i < points.size(); ++i)
         if (PathCrossesClosedDoor(bot, points[i].x, points[i].y))
         {
-            LogMovementDecision(ai, bot, "door-blocked", "route", objectiveUnit);
+            static std::map<uint32, uint32> lastBlockMs;
+            uint32 nowMs = WorldTimer::getMSTime();
+            uint32& lastBlock = lastBlockMs[bot->GetObjectGuid().GetCounter()];
+            if (!lastBlock || nowMs - lastBlock > 5000)
+            {
+                lastBlock = nowMs;
+                LogMovementDecision(ai, bot, "door-blocked", "route", objectiveUnit);
+            }
             ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
             return true;    // stand until the door opens
         }
@@ -1144,6 +1169,8 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
             if (steer || candidate->GetDistance(bot) > 20.0f)
                 continue;   // off-route and not near the tank either
         }
+        if (PathCrossesClosedDoor(bot, candidate->GetPositionX(), candidate->GetPositionY()))
+            continue;   // behind a closed door: not pullable
         best = distance;
         pick = candidate;
     }
