@@ -449,6 +449,18 @@ void ShotCaller::Submit(Player* master, const std::string& text, bool synthetic)
             Unit* unit = bot->GetPlayerbotAI()->GetUnit(guid);
             if (!unit || !unit->IsAlive())
                 continue;
+            // candidate freshness: sub-15% trash is dead before the model's
+            // 5-7s response lands — the dominant kill-order rejection cause
+            // (17:24 run: 24 stale rejections). Marked targets stay listed.
+            if (unit->GetHealthPercent() < 15.0f)
+            {
+                bool marked = false;
+                for (int icon = 0; icon < 8; ++icon)
+                    if (ObjectGuid(group->GetTargetIcon(icon)) == guid)
+                        marked = true;
+                if (!marked)
+                    continue;
+            }
             seen.push_back(guid);
             std::string id = "t" + std::to_string(count);
             job.targets.push_back({id, guid, unit->GetName()});

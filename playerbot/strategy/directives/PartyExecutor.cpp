@@ -27,6 +27,7 @@
 #include "Util/Timer.h"
 
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <fstream>
 #include <map>
@@ -124,7 +125,9 @@ namespace
         return ddx * ddx + ddy * ddy <= tolerance * tolerance;
     }
 
-    bool PathCrossesClosedDoor(Player* bot, float destX, float destY)
+    // one grid visit per DECISION, not per candidate (the pull loops call
+    // the segment test dozens of times per tick)
+    void CollectClosedDoors(Player* bot, std::vector<GameObject*>& out)
     {
         std::list<GameObject*> gos;
         AnyGameObjectInObjectRangeCheck check(bot, 60.0f);
@@ -134,13 +137,31 @@ namespace
         {
             if (go->GetGoType() != GAMEOBJECT_TYPE_DOOR)
                 continue;
-            if (go->GetGoState() != GO_STATE_READY)
-                continue;   // open door
-            if (SegmentNearPoint2D(bot->GetPositionX(), bot->GetPositionY(),
-                                   destX, destY, go->GetPositionX(), go->GetPositionY(), 4.0f))
-                return true;
+            // startOpen INVERTS the state semantics: a permanently-open
+            // gateway idles in GO_STATE_READY — treating READY as closed
+            // unconditionally would wall off open passages
+            bool startOpen = go->GetGOInfo() && go->GetGOInfo()->door.startOpen;
+            bool closed = (go->GetGoState() == GO_STATE_READY) != startOpen;
+            if (closed)
+                out.push_back(go);
         }
+    }
+
+    bool SegmentCrossesDoors(const std::vector<GameObject*>& doors,
+                             float x1, float y1, float x2, float y2)
+    {
+        for (GameObject* go : doors)
+            if (SegmentNearPoint2D(x1, y1, x2, y2,
+                                   go->GetPositionX(), go->GetPositionY(), 4.0f))
+                return true;
         return false;
+    }
+
+    bool PathCrossesClosedDoor(Player* bot, float destX, float destY)
+    {
+        std::vector<GameObject*> doors;
+        CollectClosedDoors(bot, doors);
+        return SegmentCrossesDoors(doors, bot->GetPositionX(), bot->GetPositionY(), destX, destY);
     }
 
     // wand churn guard: 17:24 run had 26 Shoot starts and ONE completion —
@@ -996,6 +1017,8 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
 
     AiObjectContext* context = ai->GetAiObjectContext();
     std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+    std::vector<GameObject*> closedDoors;
+    CollectClosedDoors(bot, closedDoors);
     Unit* pick = nullptr;
     float best = ROUTE_PULL_RANGE;
     for (const ObjectGuid& guid : possible)
@@ -1012,7 +1035,8 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
             continue;
         if ((dx * hx + dy * hy) / distance < 0.25f)
             continue;   // outside the cone
-        if (PathCrossesClosedDoor(bot, candidate->GetPositionX(), candidate->GetPositionY()))
+        if (SegmentCrossesDoors(closedDoors, bot->GetPositionX(), bot->GetPositionY(),
+                                candidate->GetPositionX(), candidate->GetPositionY()))
             continue;   // behind a closed door: not pullable (charge splines
                         // ignore doors entirely — the westward gate zap)
         best = distance;
@@ -1043,7 +1067,8 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
         return false;
 
     for (size_t i = 1; i < points.size(); ++i)
-        if (PathCrossesClosedDoor(bot, points[i].x, points[i].y))
+        if (SegmentCrossesDoors(closedDoors, points[i - 1].x, points[i - 1].y,
+                                points[i].x, points[i].y))
         {
             static std::map<uint32, uint32> lastBlockMs;
             uint32 nowMs = WorldTimer::getMSTime();
@@ -1149,6 +1174,8 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
     float heading = master->GetOrientation();
     float hx = std::cos(heading), hy = std::sin(heading);
     std::list<ObjectGuid> possible = context->GetValue<std::list<ObjectGuid>>("possible targets")->Get();
+    std::vector<GameObject*> closedDoorsAuto;
+    CollectClosedDoors(bot, closedDoorsAuto);
     Unit* pick = nullptr;
     float best = 45.0f;
     for (const ObjectGuid& guid : possible)
@@ -1169,7 +1196,8 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
             if (steer || candidate->GetDistance(bot) > 20.0f)
                 continue;   // off-route and not near the tank either
         }
-        if (PathCrossesClosedDoor(bot, candidate->GetPositionX(), candidate->GetPositionY()))
+        if (SegmentCrossesDoors(closedDoorsAuto, bot->GetPositionX(), bot->GetPositionY(),
+                                candidate->GetPositionX(), candidate->GetPositionY()))
             continue;   // behind a closed door: not pullable
         best = distance;
         pick = candidate;
@@ -2243,7 +2271,17 @@ void PartyExecutor::LogMovementDecision(PlayerbotAI* ai, Player* bot, const char
     std::lock_guard<std::mutex> lock(s_moveMutex);
     if (!s_moveLog.is_open())
     {
-        s_moveLog.open("../logs/movement_decisions.jsonl", std::ios::app);
+        const char* primary = "../logs/movement_decisions.jsonl";
+        // rotate at 50MB: append-only by design, unbounded by accident
+        {
+            std::ifstream probe(primary, std::ios::ate | std::ios::binary);
+            if (probe.is_open() && probe.tellg() > std::streamoff(50) * 1024 * 1024)
+            {
+                probe.close();
+                std::rename(primary, "../logs/movement_decisions.1.jsonl");
+            }
+        }
+        s_moveLog.open(primary, std::ios::app);
         if (!s_moveLog.is_open())
             s_moveLog.open("movement_decisions.jsonl", std::ios::app);
         if (!s_moveLog.is_open())
