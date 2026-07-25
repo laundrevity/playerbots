@@ -1391,7 +1391,23 @@ void PlayerbotAI::HandleCommand(uint32 type, const std::string& text, Player& fr
     // (never to PlayerbotMgr), so the hook lives here; ShotCaller dedupes
     // the per-bot relays into one LLM call.
     if ((type == CHAT_MSG_PARTY || type == CHAT_MSG_RAID) && fromPlayer.isRealPlayer())
+    {
         sShotCaller.OnPartyChat(&fromPlayer, type, filtered);
+        // Executor-owned bots: party chat is the SEAM, not a command line.
+        // The inherited engine parsed natural speech as commands ("keep
+        // pulling" hit the keep-item command and four bots whispered usage
+        // errors). Explicit utility commands keep working; everything else
+        // belongs to the shot-caller alone. Whispers are untouched.
+        if (ai::PartyExecutor::ShouldOwn(this, bot))
+        {
+            std::string firstWord = filtered.substr(0, filtered.find(' '));
+            static const std::set<std::string> UTILITY = {
+                "co", "nc", "de", "do", "brain", "range", "reset", "summon",
+                "stats", "cast", "help", "talents", "equip", "ll" };
+            if (UTILITY.find(firstWord) == UTILITY.end())
+                return;
+        }
+    }
 
     if (filtered.find(sPlayerbotAIConfig.commandSeparator) != std::string::npos)
     {
