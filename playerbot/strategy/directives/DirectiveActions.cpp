@@ -128,11 +128,10 @@ bool ApplyDirectiveAction::Execute(Event& event)
         incoming.killOrder.push_back(guid);
     }
 
-    if (!incoming.requestedKillOrder.empty() && incoming.killOrder.empty())
-    {
-        Report(incoming, false, "no valid kill-order targets", notifyScript);
-        return false;
-    }
+    // Target freshness is field-local. A stale kill order is dropped while
+    // independent cooldown, blessing, emergency-use, chat, and pull fields
+    // remain valid; rejecting the whole document made inference latency erase
+    // unrelated decisions.
 
     // cc assignments: same resolution + attackable-set rules as kill order
     for (Directive::CcAssignment assignment : incoming.requestedCc)
@@ -212,16 +211,14 @@ bool ApplyDirectiveAction::Execute(Event& event)
         context->GetValue<std::string>("blessing overrides")->Set(overrides);
     }
 
-    // "pulling": sticky pull pacing — stored past the directive TTL ("stop
-    // pulling" means until countermanded). Any bot stores it; only the tank's
-    // auto-advance reads its own copy.
+    // Pull authority/pacing is stored past the directive TTL. "steer" is
+    // executor-bounded; "manual" and "hold" remain until countermanded.
     if (!incoming.pulling.empty())
     {
         context->GetValue<std::string>("pull policy")->Set(incoming.pulling == "normal" ? "" : incoming.pulling);
         sLog.outBasic("Directive: %s pull policy '%s'", bot->GetName(), incoming.pulling.c_str());
-        // a policy that takes navigation away from the route must also stop
-        // an already-launched route leg (16:10: the spline kept flying)
-        if (incoming.pulling != "normal")
+        // Authority changes stop the current leg. Fast changes pacing only.
+        if (incoming.pulling != "fast")
         {
             PartyExecutor::CancelRouteMovement(bot);
             PartyExecutor::LogMovementDecision(ai, bot, "route-cancel", incoming.pulling.c_str(), nullptr);

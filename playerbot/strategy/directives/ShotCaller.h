@@ -53,6 +53,7 @@ namespace ai
             std::string id;
             ObjectGuid guid;
             std::string name;
+            bool engaged = false;
         };
 
         struct Job
@@ -62,6 +63,8 @@ namespace ai
             std::vector<std::string> partyNames;
             std::vector<TargetCandidate> targets;
             std::string masterName;
+            bool synthetic = false;
+            uint32 submittedAtMs = 0;
         };
 
         void EnsureWorker();

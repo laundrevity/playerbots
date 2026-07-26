@@ -56,7 +56,8 @@ namespace
         "plainly in the reply ('can't steer that yet') instead of agreeing.\n"
         "- directives may only name the LISTED BOTS — never the human.\n"
         "- sometimes you get a Situation line instead of chat: that is you noticing the fight "
-        "state on your own — make the call unprompted.\n"
+        "state on your own — make the combat call unprompted, but never set pulling or "
+        "come_to_me from a Situation.\n"
         "- dungeon Situations are emergencies (someone critical or dead, a huge pull): set "
         "cooldowns=burn when the fix is killing faster, and set use on the ONE bot whose "
         "defensive saves the moment: tank warrior = shield wall or last stand (or challenging "
@@ -68,12 +69,12 @@ namespace
         "position ('come to me', 'get inside', 'everyone in here'). The executor keeps "
         "them moving until they truly stand beside the human with line of sight — never "
         "answer such a request with words alone.\n"
-        "- pulling goes on the TANK's directive and STICKS until changed: hold = park/follow "
-        "without pulling ('stop pulling', 'hold', 'afk', 'brb', 'need mana'); steer = bypass "
-        "the boss route and pull strictly where the human faces ('wrong way', 'turn around', "
-        "'this way', 'follow me', 'let me lead'); fast = chain-pull with looser hp/mana waits; "
-        "normal = resume the configured boss route. Never claim a direction change without "
-        "setting pulling=steer. Acknowledge the change in the reply.\n"
+        "- pulling goes on the TANK's directive: hold = park/follow without pulling ('stop "
+        "pulling', 'hold', 'afk', 'brb', 'need mana'); steer = ONE bounded correction toward "
+        "the human's facing ('wrong way', 'turn around', 'this way'); manual = keep following "
+        "the human's facing until changed ('let me lead'); fast = keep the configured route "
+        "but chain-pull with looser hp/mana waits; normal = configured route at normal pace. "
+        "Acknowledge navigation changes in the reply.\n"
         "- reply: ONE short casual party-chat answer, like a terse guildmate (max 12 words, "
         "no roleplay flourishes, no emoji).";
 
@@ -106,9 +107,12 @@ namespace
             return lower.find(phrase) != std::string::npos;
         };
 
+        if (has("let me lead") || has("follow my lead") || has("i will lead"))
+            return {"manual", "Following your lead."};
+
         if (has("wrong way") || has("other way") || has("turn around") ||
-            has("this way") || has("follow me") || has("follow my lead") ||
-            has("let me lead") || has("not crusader") || has("tank steer"))
+            has("this way") || has("follow me") || has("not crusader") ||
+            has("tank steer"))
             return {"steer", "Following your lead."};
 
         // spatial recall: a true movement intent, not a policy — the party
@@ -121,8 +125,12 @@ namespace
             return {"hold", "Coming back and holding."};
 
         if (has("resume route") || has("take point") || has("you lead") ||
-            has("tank route") || has("route on"))
+            has("tank route") || has("route on") || has("keep pulling") ||
+            has("pull on") || has("lead on") || lower == "go")
             return {"normal", "Taking the route again."};
+
+        if (has("pull fast") || has("speed up") || has("chain pull"))
+            return {"fast", "Picking up the pace."};
 
         return {};
     }
@@ -227,7 +235,7 @@ namespace
                                              "vanish", "feign death", "divine protection", "divine shield",
                                              "lay on hands", "barkskin", "frenzied regeneration", "ice block"})}}},
               {"cooldowns", {{"type", "string"}, {"enum", json::array({"hold", "normal", "burn"})}}},
-              {"pulling", {{"type", "string"}, {"enum", json::array({"hold", "normal", "fast", "steer"})}}},
+              {"pulling", {{"type", "string"}, {"enum", json::array({"hold", "normal", "fast", "steer", "manual"})}}},
               {"come_to_me", {{"type", "boolean"}}},
               {"cc",
                {{"type", "array"},
@@ -408,6 +416,8 @@ void ShotCaller::Submit(Player* master, const std::string& text, bool synthetic)
     // ---- snapshot on the world thread: strings only cross to the worker ----
     Job job;
     job.masterName = master->GetName();
+    job.synthetic = synthetic;
+    job.submittedAtMs = WorldTimer::getMSTime();
     job.partyNames.push_back(job.masterName);
 
     std::ostringstream roster;
@@ -463,7 +473,7 @@ void ShotCaller::Submit(Player* master, const std::string& text, bool synthetic)
             }
             seen.push_back(guid);
             std::string id = "t" + std::to_string(count);
-            job.targets.push_back({id, guid, unit->GetName()});
+            job.targets.push_back({id, guid, unit->GetName(), unit->IsInCombat()});
             targets << id << " | " << unit->GetName() << " ("
                     << uint32(unit->GetHealthPercent()) << "% hp";
             for (int icon = 0; icon < 8; ++icon)
@@ -592,6 +602,8 @@ void ShotCaller::ProcessJob(const Job& job)
         {
             if (candidate.id != id)
                 continue;
+            if (job.synthetic && !candidate.engaged)
+                return false;
             std::ostringstream guid;
             guid << "0x" << std::hex << candidate.guid.GetRawValue();
             resolved = {{"guid", guid.str()}, {"name", candidate.name}};
@@ -648,10 +660,10 @@ void ShotCaller::ProcessJob(const Job& job)
         if (entry.contains("use") && entry["use"].is_string() &&
             !entry["use"].get<std::string>().empty())
             directive["use"] = entry["use"];
-        if (entry.contains("pulling") && entry["pulling"].is_string() &&
+        if (!job.synthetic && entry.contains("pulling") && entry["pulling"].is_string() &&
             !entry["pulling"].get<std::string>().empty())
             directive["pulling"] = entry["pulling"];
-        if (entry.contains("come_to_me") && entry["come_to_me"].is_boolean() &&
+        if (!job.synthetic && entry.contains("come_to_me") && entry["come_to_me"].is_boolean() &&
             entry["come_to_me"].get<bool>())
             directive["come_to_me"] = true;
         if (entry.contains("cc") && entry["cc"].is_array())
@@ -681,8 +693,12 @@ void ShotCaller::ProcessJob(const Job& job)
         ++dispatched;
     }
 
-    sLog.outBasic("ShotCaller: '%s' candidates=%u mapped=%u rejected=%u -> %u directive(s), reply='%s', %ums",
-                  job.masterName.c_str(), uint32(job.targets.size()), mappedTargets,
+    uint32 nowMs = WorldTimer::getMSTime();
+    uint32 snapshotAge = WorldTimer::getMSTimeDiff(job.submittedAtMs, nowMs);
+    sLog.outBasic("ShotCaller: '%s' origin=%s snapshot_age=%ums candidates=%u mapped=%u "
+                  "rejected=%u -> %u directive(s), reply='%s', %ums",
+                  job.masterName.c_str(), job.synthetic ? "synthetic" : "human",
+                  snapshotAge, uint32(job.targets.size()), mappedTargets,
                   rejectedTargets, dispatched, reply.c_str(), latency);
 }
 

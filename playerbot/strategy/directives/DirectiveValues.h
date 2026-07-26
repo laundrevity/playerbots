@@ -28,7 +28,8 @@ namespace ai
     };
 
     // Sticky pull control for the tank: "" (normal route), "hold", "fast", or
-    // "steer" (strict human-facing pulls). Set by the pulling directive verb;
+    // "steer" (one human-facing correction) or "manual" (sticky human lead).
+    // Set by the pulling directive verb;
     // deliberately outlives the directive TTL.
     class PullPolicyValue : public ManualSetValue<std::string>
     {

@@ -11,6 +11,7 @@
 #include "Grids/CellImpl.h"
 #include "playerbot/strategy/directives/DirectiveMgr.h"
 #include "playerbot/strategy/directives/DirectiveValues.h"
+#include "playerbot/strategy/directives/DungeonRoutePlanner.h"
 #include "playerbot/strategy/directives/ShotCaller.h"
 
 #include "playerbot/thirdparty/nlohmann/json.hpp"
@@ -54,10 +55,24 @@ namespace
     constexpr float ROUTE_CHUNK = 80.0f;    // one smooth spline per chunk
     constexpr float ROUTE_PULL_RANGE = 35.0f;
 
-    // the human tank's pacing checklist: nobody fighting, nobody low,
-    // mana users watered — shared by every pull-on-your-own mode
-    bool PartyReadyToPull(Group* group, bool fast = false)
+    // Pull readiness combines recovery with formation. The tank leads, but
+    // does not begin the next engagement until the party is close and visible.
+    bool PartyReadyToPull(Group* group, Player* tank, bool fast = false,
+                          Player** blocker = nullptr, const char** reason = nullptr)
     {
+        if (blocker)
+            *blocker = nullptr;
+        if (reason)
+            *reason = nullptr;
+        auto fail = [&](Player* member, const char* why)
+        {
+            if (blocker)
+                *blocker = member;
+            if (reason)
+                *reason = why;
+            return false;
+        };
+
         // fast = chain-pull pacing: only genuinely dangerous states wait
         uint32 hpWait = fast ? 4 : 6;      // tenths: below 40%/60% hp
         uint32 manaWait = fast ? 3 : 5;    // tenths: below 30%/50% mana
@@ -67,14 +82,38 @@ namespace
             if (!member || !member->IsInWorld())
                 continue;
             if (member->IsInCombat())
-                return false;
+                return fail(member, "combat");
             if (member->GetHealth() * 10 < member->GetMaxHealth() * hpWait)
-                return false;
+                return fail(member, "health");
             if (member->GetPowerType() == POWER_MANA &&
                 member->GetPower(POWER_MANA) * 10 < member->GetMaxPower(POWER_MANA) * manaWait)
-                return false;   // let the mana users drink
+                return fail(member, "mana");   // let the mana users drink
+            if (!tank || member == tank)
+                continue;
+            if (member->GetMapId() != tank->GetMapId())
+                return fail(member, "map");
+            float limit = (!member->GetPlayerbotAI() || PlayerbotAI::IsHeal(member)) ? 28.0f : 22.0f;
+            if (sServerFacade.GetDistance2d(tank, member) > limit)
+                return fail(member, "distance");
+            if (!tank->IsWithinLOSInMap(member))
+                return fail(member, "los");
         }
         return true;
+    }
+
+    void LogPullWait(PlayerbotAI* ai, Player* tank, Player* blocker,
+                     const char* reason, const char* source)
+    {
+        static std::map<uint32, uint32> lastLog;
+        uint32 now = WorldTimer::getMSTime();
+        uint32& last = lastLog[tank->GetObjectGuid().GetCounter()];
+        if (last && WorldTimer::getMSTimeDiff(last, now) < 5000)
+            return;
+        last = now;
+        std::string detail = std::string(source ? source : "pull") + ":" +
+                             (reason ? reason : "unknown");
+        PartyExecutor::LogMovementDecision(ai, tank, "formation-wait",
+                                           detail.c_str(), blocker);
     }
 
     // One deterministic party-wide engagement view: every member's victim
@@ -627,67 +666,6 @@ namespace
         return false;
     }
 
-    // ---- tank routes (encounters/party_routes.json, installed to etc/) ----
-    // The offline DSL: map id -> ordered boss creature_template entries.
-    // Spawn guid/position resolved once from the world DB.
-    struct RouteBoss
-    {
-        uint32 entry = 0;
-        uint32 dbguid = 0;
-        float x = 0.0f, y = 0.0f, z = 0.0f;
-    };
-
-    std::map<uint32, std::vector<RouteBoss>> s_routes;
-    bool s_routesLoaded = false;
-
-    void LoadRoutes()
-    {
-        if (s_routesLoaded)
-            return;
-        s_routesLoaded = true;
-
-        // resolved like the aux confs: relative to cwd (bin/)
-        std::ifstream in("../etc/party_routes.json");
-        if (!in.is_open())
-            in.open("party_routes.json");
-        if (!in.is_open())
-            return;             // no routes: master-steered mode everywhere
-
-        nlohmann::json doc = nlohmann::json::parse(in, nullptr, false);
-        if (doc.is_discarded() || !doc.contains("routes") || !doc["routes"].is_object())
-        {
-            sLog.outError("PartyExecutor: party_routes.json unparseable — tank routing disabled");
-            return;
-        }
-
-        for (const auto& item : doc["routes"].items())
-        {
-            uint32 mapId = uint32(atoi(item.key().c_str()));
-            if (!item.value().contains("bosses") || !item.value()["bosses"].is_array())
-                continue;
-            for (const auto& entryNode : item.value()["bosses"])
-            {
-                if (!entryNode.is_number_unsigned())
-                    continue;
-                RouteBoss boss;
-                boss.entry = entryNode.get<uint32>();
-                auto result = WorldDatabase.PQuery(
-                    "SELECT guid, position_x, position_y, position_z FROM creature "
-                    "WHERE id = %u AND map = %u LIMIT 1", boss.entry, mapId);
-                if (!result)
-                {
-                    sLog.outError("PartyExecutor: route map %u boss entry %u has no spawn — skipped", mapId, boss.entry);
-                    continue;
-                }
-                Field* fields = result->Fetch();
-                boss.dbguid = fields[0].GetUInt32();
-                boss.x = fields[1].GetFloat();
-                boss.y = fields[2].GetFloat();
-                boss.z = fields[3].GetFloat();
-                s_routes[mapId].push_back(boss);
-            }
-        }
-    }
 }
 
 bool PartyExecutor::ShouldOwn(PlayerbotAI* ai, Player* bot)
@@ -792,6 +770,15 @@ bool PartyExecutor::TryChargePull(PlayerbotAI* ai, Player* bot)
         target = GetDirectiveKillTarget(ai, context);
     if (!target || target->IsInCombat())
         return false;
+
+    Player* blocker = nullptr;
+    const char* reason = nullptr;
+    if (Group* group = bot->GetGroup())
+        if (!PartyReadyToPull(group, bot, false, &blocker, &reason))
+        {
+            LogPullWait(ai, bot, blocker, reason, "marked");
+            return true;
+        }
 
     float distance = sServerFacade.GetDistance2d(bot, target);
     if (distance < 8.0f || distance > 24.0f)
@@ -933,27 +920,22 @@ bool PartyExecutor::KeepPartyBuffed(PlayerbotAI* ai, Player* bot)
     return false;
 }
 
-// The tank WALKS POINT in a routed dungeon by default. Sticky hold/steer pull
-// policies hand control back to the human before any route movement happens.
+// The tank walks point in a routed dungeon by default. Authority and pace are
+// independent: normal/fast use the route, manual/steer use human facing.
 bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
 {
     if (!IsTankBot(bot))
         return false;
     std::string pullPolicy = ai->GetAiObjectContext()->GetValue<std::string>("pull policy")->Get();
-    // navigation authority is separate from pace: the configured boss route
-    // runs ONLY under normal policy. 16:10 run: 'fast' resumed the flat
-    // route toward the skipped live-side boss through Slaughter Square's
-    // closed gate — fast means faster HUMAN-directed pulls, never autopilot.
-    if (HoldPolicy(ai) || pullPolicy == "hold" || pullPolicy == "steer" || pullPolicy == "fast")
+    if (HoldPolicy(ai) || pullPolicy == "hold" ||
+        pullPolicy == "steer" || pullPolicy == "manual")
         return false;
 
     Map* map = bot->GetMap();
     if (!map || !map->IsDungeon())
         return false;
 
-    LoadRoutes();
-    auto routeItr = s_routes.find(bot->GetMapId());
-    if (routeItr == s_routes.end() || routeItr->second.empty())
+    if (!sDungeonRoutePlanner.HasRoute(bot->GetMapId()))
         return false;   // no route for this map: master-steered mode
 
     Player* master = ai->GetMaster();
@@ -968,44 +950,35 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
         return true;    // stand ground, don't run back either
     }
 
-    // party not topped: hold position while they drink (don't drift home)
-    if (!PartyReadyToPull(group))
+    Player* blocker = nullptr;
+    const char* waitReason = nullptr;
+    if (!PartyReadyToPull(group, bot, pullPolicy == "fast", &blocker, &waitReason))
     {
+        LogPullWait(ai, bot, blocker, waitReason, "route");
         ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
         return true;
     }
 
-    // objective: first boss in route order that is not confirmed dead
-    const RouteBoss* objective = nullptr;
-    Unit* objectiveUnit = nullptr;
-    for (const RouteBoss& boss : routeItr->second)
+    DungeonRouteObjective objective;
+    std::string routeState;
+    if (!sDungeonRoutePlanner.NextObjective(bot, objective, routeState))
     {
-        Creature* creature = map->GetCreature(ObjectGuid(HIGHGUID_UNIT, boss.entry, boss.dbguid));
-        if (creature && creature->IsDead())
-            continue;
-        objective = &boss;
-        objectiveUnit = creature;   // null until his grid loads: head for the spawn
-        break;
+        static std::map<uint32, uint32> lastStateLog;
+        uint32 now = WorldTimer::getMSTime();
+        uint32& last = lastStateLog[bot->GetObjectGuid().GetCounter()];
+        if (!last || WorldTimer::getMSTimeDiff(last, now) >= 10000)
+        {
+            last = now;
+            LogMovementDecision(ai, bot, routeState.c_str(), nullptr, nullptr);
+        }
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;    // configured route owns authority, including completion
     }
-    if (!objective)
-        return false;   // route cleared — dungeon done
-
-    // locality gate: a flat forward-only boss list cannot drive a partial
-    // or reverse run. Undead-side Strat: the first alive objective was
-    // Willey (live side, far west) and the route marched the tank at him —
-    // an objective far from the HUMAN is not this run's objective. Cone
-    // steering (AutoAdvance) takes over instead.
-    {
-        float mdx = objective->x - master->GetPositionX();
-        float mdy = objective->y - master->GetPositionY();
-        float mdz = objective->z - master->GetPositionZ();
-        if (mdx * mdx + mdy * mdy + mdz * mdz > 150.0f * 150.0f)
-            return false;
-    }
-
-    float objX = objectiveUnit ? objectiveUnit->GetPositionX() : objective->x;
-    float objY = objectiveUnit ? objectiveUnit->GetPositionY() : objective->y;
-    float objZ = objectiveUnit ? objectiveUnit->GetPositionZ() : objective->z;
+    Unit* objectiveUnit = objective.bossGuid ? map->GetCreature(objective.bossGuid) : nullptr;
+    float objX = objectiveUnit ? objectiveUnit->GetPositionX() : objective.x;
+    float objY = objectiveUnit ? objectiveUnit->GetPositionY() : objective.y;
+    float objZ = objectiveUnit ? objectiveUnit->GetPositionZ() : objective.z;
+    std::string routeDetail = objective.pathId + "/" + objective.nodeId;
 
     // clear what stands in the way: nearest out-of-combat hostile inside a
     // ~75° cone from the TANK toward the objective (includes the boss when
@@ -1028,6 +1001,10 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
             continue;
         if (candidate->IsPlayer())
             continue;
+        if (!sServerFacade.IsHostileTo(candidate, bot))
+            continue;
+        if (candidate->GetTypeId() == TYPEID_UNIT && ((Creature*)candidate)->IsCritter())
+            continue;
         float dx = candidate->GetPositionX() - bot->GetPositionX();
         float dy = candidate->GetPositionY() - bot->GetPositionY();
         float distance = std::sqrt(dx * dx + dy * dy);
@@ -1044,7 +1021,16 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     }
     if (pick)
     {
-        LogMovementDecision(ai, bot, "route-pull", objective ? std::to_string(objective->entry).c_str() : nullptr, pick);
+        uint32 planned = 0;
+        for (const ObjectGuid& guid : possible)
+            if (Unit* candidate = ai->GetUnit(guid))
+                if (candidate->IsAlive() && !candidate->IsPlayer() &&
+                    sServerFacade.IsHostileTo(candidate, bot) &&
+                    sServerFacade.GetDistance2d(candidate, pick) <= 12.0f)
+                    ++planned;
+        char detail[192];
+        snprintf(detail, sizeof(detail), "%s pack=%u", routeDetail.c_str(), planned);
+        LogMovementDecision(ai, bot, "route-plan-pull", detail, pick);
         return EngagePull(ai, bot, pick);
     }
 
@@ -1060,11 +1046,18 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     pathfinder.setPathLengthLimit(ROUTE_CHUNK);
     pathfinder.calculate(objX, objY, objZ, false);
     if (pathfinder.getPathType() & PATHFIND_NOPATH)
-        return false;
+    {
+        LogMovementDecision(ai, bot, "route-no-path", routeDetail.c_str(), objectiveUnit);
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;
+    }
 
     const PointsArray& points = pathfinder.getPath();
     if (points.size() < 2)
-        return false;
+    {
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;
+    }
 
     for (size_t i = 1; i < points.size(); ++i)
         if (SegmentCrossesDoors(closedDoors, points[i - 1].x, points[i - 1].y,
@@ -1076,7 +1069,7 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
             if (!lastBlock || nowMs - lastBlock > 5000)
             {
                 lastBlock = nowMs;
-                LogMovementDecision(ai, bot, "door-blocked", "route", objectiveUnit);
+                LogMovementDecision(ai, bot, "door-blocked", routeDetail.c_str(), objectiveUnit);
             }
             ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
             return true;    // stand until the door opens
@@ -1086,15 +1079,14 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     init.MovebyPath(points);
     init.SetWalk(false);
     init.Launch();
-    LogMovementDecision(ai, bot, "route", objective ? std::to_string(objective->entry).c_str() : nullptr, objectiveUnit);
+    LogMovementDecision(ai, bot, "route-plan", routeDetail.c_str(), objectiveUnit);
     ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
     return true;
 }
 
 void PartyExecutor::ReloadRoutes()
 {
-    s_routesLoaded = false;
-    s_routes.clear();   // next dungeon tick re-reads party_routes.json
+    sDungeonRoutePlanner.Reload();
 }
 
 // The tank pulls ON HIS OWN. The human's facing is the route intent: the
@@ -1111,8 +1103,26 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
     std::string pullPolicy = context->GetValue<std::string>("pull policy")->Get();
     if (HoldPolicy(ai) || pullPolicy == "hold")
         return false;   // "stop pulling" in party chat parks the tank (sticky)
-    bool fast = pullPolicy == "fast";
     bool steer = pullPolicy == "steer";
+    bool manual = pullPolicy == "manual";
+    bool fast = pullPolicy == "fast";
+
+    if (steer)
+    {
+        static std::map<uint32, uint32> steerStarted;
+        uint32 counter = bot->GetObjectGuid().GetCounter();
+        uint32 now = WorldTimer::getMSTime();
+        uint32& started = steerStarted[counter];
+        if (!started)
+            started = now;
+        if (WorldTimer::getMSTimeDiff(started, now) >= 20000)
+        {
+            started = 0;
+            context->GetValue<std::string>("pull policy")->Set("");
+            LogMovementDecision(ai, bot, "steer-timeout", "route-resumed", nullptr);
+            return true;
+        }
+    }
 
     Player* master = ai->GetMaster();
     Group* group = bot->GetGroup();
@@ -1165,8 +1175,13 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
     }
 
     // human-tank pacing checklist (fast = chain-pull thresholds)
-    if (!PartyReadyToPull(group, fast))
-        return false;
+    Player* blocker = nullptr;
+    const char* waitReason = nullptr;
+    if (!PartyReadyToPull(group, bot, fast, &blocker, &waitReason))
+    {
+        LogPullWait(ai, bot, blocker, waitReason, manual ? "manual" : (steer ? "steer" : "auto"));
+        return true;
+    }
 
     // next pack: nearest hostile in the master's heading cone. Fast mode
     // ignores the cone. Normal route fallback also takes anything close to
@@ -1185,6 +1200,10 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
             continue;
         if (candidate->IsPlayer())
             continue;
+        if (!sServerFacade.IsHostileTo(candidate, bot))
+            continue;
+        if (candidate->GetTypeId() == TYPEID_UNIT && ((Creature*)candidate)->IsCritter())
+            continue;
         float dx = candidate->GetPositionX() - master->GetPositionX();
         float dy = candidate->GetPositionY() - master->GetPositionY();
         float distance = std::sqrt(dx * dx + dy * dy);
@@ -1193,7 +1212,7 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
         // inside the heading cone? (dot product against the facing vector)
         if (!fast && (dx * hx + dy * hy) / distance < 0.25f)   // cos(~75°)
         {
-            if (steer || candidate->GetDistance(bot) > 20.0f)
+            if (steer || manual || candidate->GetDistance(bot) > 20.0f)
                 continue;   // off-route and not near the tank either
         }
         if (SegmentCrossesDoors(closedDoorsAuto, bot->GetPositionX(), bot->GetPositionY(),
@@ -1205,8 +1224,16 @@ bool PartyExecutor::AutoAdvance(PlayerbotAI* ai, Player* bot)
     if (!pick)
         return false;   // nothing ahead: turn to steer me
 
-    LogMovementDecision(ai, bot, "auto-pull", steer ? "steer" : (fast ? "fast" : "cone"), pick);
-    return EngagePull(ai, bot, pick);
+    LogMovementDecision(ai, bot, "auto-pull",
+                        steer ? "steer" : (manual ? "manual" : (fast ? "fast" : "cone")), pick);
+    bool acted = EngagePull(ai, bot, pick);
+    if (acted && steer &&
+        (pick->IsInCombat() || bot->GetVictim() == pick || !bot->movespline->Finalized()))
+    {
+        context->GetValue<std::string>("pull policy")->Set("");
+        LogMovementDecision(ai, bot, "steer-complete", "route-resumed", pick);
+    }
+    return acted;
 }
 
 // non-tank bots anchor on the TANK (he leads); the master steers by walking
@@ -1814,11 +1841,10 @@ bool PartyExecutor::TryInterrupt(PlayerbotAI* ai, Player* bot, Unit* target)
 
 Unit* PartyExecutor::LooseMobOnParty(PlayerbotAI* ai, Player* bot)
 {
-    AiObjectContext* context = ai->GetAiObjectContext();
-    std::list<ObjectGuid> attackers = context->GetValue<std::list<ObjectGuid>>("attackers")->Get();
-    for (const ObjectGuid& guid : attackers)
+    std::vector<Unit*> engaged;
+    CollectGroupEngagement(ai, bot, engaged);
+    for (Unit* attacker : engaged)
     {
-        Unit* attacker = ai->GetUnit(guid);
         if (!attacker || sServerFacade.UnitIsDead(attacker))
             continue;
         Unit* victim = attacker->GetVictim();
@@ -1838,13 +1864,12 @@ Unit* PartyExecutor::LooseMobOnParty(PlayerbotAI* ai, Player* bot)
 // about to peel off — feed it the next sunder/slam
 Unit* PartyExecutor::LowestThreatAttacker(PlayerbotAI* ai, Player* bot)
 {
-    AiObjectContext* context = ai->GetAiObjectContext();
-    std::list<ObjectGuid> attackers = context->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+    std::vector<Unit*> engaged;
+    CollectGroupEngagement(ai, bot, engaged);
     Unit* lowest = nullptr;
     float best = 0.0f;
-    for (const ObjectGuid& guid : attackers)
+    for (Unit* attacker : engaged)
     {
-        Unit* attacker = ai->GetUnit(guid);
         if (!attacker || sServerFacade.UnitIsDead(attacker))
             continue;
         if (!bot->CanReachWithMeleeAttack(attacker))
@@ -2290,7 +2315,8 @@ void PartyExecutor::LogMovementDecision(PlayerbotAI* ai, Player* bot, const char
     std::string policy = ai->GetAiObjectContext()->GetValue<std::string>("pull policy")->Get();
     Player* master = ai->GetMaster();
     Player* tank = nullptr;
-    if (Group* group = bot->GetGroup())
+    Group* group = bot->GetGroup();
+    if (group)
         for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
             Player* member = itr->getSource();
@@ -2300,6 +2326,24 @@ void PartyExecutor::LogMovementDecision(PlayerbotAI* ai, Player* bot, const char
                 tank = member;
                 break;
             }
+        }
+
+    float maxPartyDist = 0.0f;
+    float maxDpsDist = 0.0f;
+    bool formationLos = true;
+    bool formationKnown = tank && group;
+    if (formationKnown)
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->getSource();
+            if (!member || member == tank || !member->IsInWorld() ||
+                member->GetMapId() != tank->GetMapId())
+                continue;
+            float distance = sServerFacade.GetDistance2d(tank, member);
+            maxPartyDist = std::max(maxPartyDist, distance);
+            if (member->GetPlayerbotAI() && !PlayerbotAI::IsHeal(member) && !IsTankBot(member))
+                maxDpsDist = std::max(maxDpsDist, distance);
+            formationLos = formationLos && tank->IsWithinLOSInMap(member);
         }
 
     s_moveLog << "{\"t\":" << uint64(std::time(nullptr))
@@ -2319,12 +2363,16 @@ void PartyExecutor::LogMovementDecision(PlayerbotAI* ai, Player* bot, const char
         s_moveLog << ",\"masterDist\":" << bot->GetDistance(master);
     if (tank && tank != bot)
         s_moveLog << ",\"tankDist\":" << bot->GetDistance(tank);
+    if (formationKnown)
+        s_moveLog << ",\"maxPartyDist\":" << maxPartyDist
+                  << ",\"maxDpsDist\":" << maxDpsDist
+                  << ",\"formationLos\":" << (formationLos ? 1 : 0);
     s_moveLog << "}\n";
     s_moveLog.flush();
 }
 
 // stop an in-flight route spline (raw MoveSplineInit) or point move —
-// steer/hold/fast/come must not fight a launched leg toward the old goal
+// steer/manual/hold/come must not fight a launched leg toward the old goal
 void PartyExecutor::CancelRouteMovement(Player* bot)
 {
     if (!bot->movespline->Finalized())
@@ -2421,12 +2469,12 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     if (!ai->HasAura("defensive stance", bot) && Cast(ai, "defensive stance", bot))
         return true;
 
-    std::list<ObjectGuid> attackers = ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("attackers")->Get();
+    std::vector<Unit*> attackers;
+    CollectGroupEngagement(ai, bot, attackers);
     uint32 meleeCount = 0;
-    for (const ObjectGuid& guid : attackers)
-        if (Unit* attacker = ai->GetUnit(guid))
-            if (bot->CanReachWithMeleeAttack(attacker))
-                ++meleeCount;
+    for (Unit* attacker : attackers)
+        if (bot->CanReachWithMeleeAttack(attacker))
+            ++meleeCount;
 
     {
         static std::map<uint32, uint32> lastThreatSnapshot;
@@ -2443,11 +2491,10 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     // any other priority ("tank ignores me pulling aggro")
     if (Player* master = ai->GetMaster())
         if (master != bot && master->IsAlive())
-            for (const ObjectGuid& guid : attackers)
-                if (Unit* menace = ai->GetUnit(guid))
-                    if (menace->IsAlive() && menace->GetVictim() == master &&
-                        Cast(ai, "taunt", menace))
-                        return true;
+            for (Unit* menace : attackers)
+                if (menace->IsAlive() && menace->GetVictim() == master &&
+                    Cast(ai, "taunt", menace))
+                    return true;
 
     if (target->GetVictim() && target->GetVictim() != bot && Cast(ai, "taunt", target))
         return true;
@@ -2461,19 +2508,18 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
         Player* master = ai->GetMaster();
         uint32 swarm = 0;
         Unit* anchor = nullptr;
-        for (const ObjectGuid& guid : attackers)
-            if (Unit* mob = ai->GetUnit(guid))
-                if (mob->IsAlive() && mob->GetVictim() && mob->GetVictim() != bot &&
-                    mob->GetVictim()->IsPlayer() && !IsSoftCrowdControlled(ai, mob))
+        for (Unit* mob : attackers)
+            if (mob->IsAlive() && mob->GetVictim() && mob->GetVictim() != bot &&
+                mob->GetVictim()->IsPlayer() && !IsSoftCrowdControlled(ai, mob))
+            {
+                Player* victim = (Player*)mob->GetVictim();
+                if ((master && victim == master) || PlayerbotAI::IsHeal(victim))
                 {
-                    Player* victim = (Player*)mob->GetVictim();
-                    if ((master && victim == master) || PlayerbotAI::IsHeal(victim))
-                    {
-                        ++swarm;
-                        if (!anchor)
-                            anchor = victim;
-                    }
+                    ++swarm;
+                    if (!anchor)
+                        anchor = victim;
                 }
+            }
         if (swarm >= 2 && anchor)
         {
             if (sServerFacade.GetDistance2d(bot, anchor) > 8.0f)
@@ -2527,13 +2573,12 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     // sunder ledger time. 10-min cd = a genuine emergency button.
     {
         uint32 loose = 0;
-        for (const ObjectGuid& guid : attackers)
-            if (Unit* mob = ai->GetUnit(guid))
-                if (mob->IsAlive() && mob->GetVictim() && mob->GetVictim() != bot &&
-                    mob->GetVictim()->IsPlayer() &&
-                    sServerFacade.GetDistance2d(bot, mob) < 10.0f &&
-                    !IsSoftCrowdControlled(ai, mob))
-                    ++loose;
+        for (Unit* mob : attackers)
+            if (mob->IsAlive() && mob->GetVictim() && mob->GetVictim() != bot &&
+                mob->GetVictim()->IsPlayer() &&
+                sServerFacade.GetDistance2d(bot, mob) < 10.0f &&
+                !IsSoftCrowdControlled(ai, mob))
+                ++loose;
         if (loose >= 3 && Cast(ai, "challenging shout", bot))
         {
             sLog.outBasic("TankRescue: %s challenging shout (%u loose mobs)", bot->GetName(), loose);
@@ -2570,21 +2615,20 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
         {
             Unit* pick = nullptr;
             uint32 candidates = 0;
-            for (const ObjectGuid& guid : attackers)
-                if (Unit* caster = ai->GetUnit(guid))
-                    // any STATIONARY ranged attacker anchors the pack — the
-                    // mana-only test rejected Strat's ranged skeletons
-                    // (probes: 24x no-candidate at attackers > melee)
-                    if (caster->IsAlive() && !caster->IsPlayer() &&
-                        !bot->CanReachWithMeleeAttack(caster) &&
-                        (caster->GetPowerType() == POWER_MANA || !caster->IsMoving()) &&
-                        sServerFacade.GetDistance2d(bot, caster) < gatherRange &&
-                        !IsSoftCrowdControlled(ai, caster))
-                    {
-                        ++candidates;
-                        if (!pick)
-                            pick = caster;
-                    }
+            for (Unit* caster : attackers)
+                // any STATIONARY ranged attacker anchors the pack — the
+                // mana-only test rejected Strat's ranged skeletons
+                // (probes: 24x no-candidate at attackers > melee)
+                if (caster->IsAlive() && !caster->IsPlayer() &&
+                    !bot->CanReachWithMeleeAttack(caster) &&
+                    (caster->GetPowerType() == POWER_MANA || !caster->IsMoving()) &&
+                    sServerFacade.GetDistance2d(bot, caster) < gatherRange &&
+                    !IsSoftCrowdControlled(ai, caster))
+                {
+                    ++candidates;
+                    if (!pick)
+                        pick = caster;
+                }
             if (pick)
             {
                 last = nowMs;
@@ -2645,15 +2689,14 @@ bool PartyExecutor::TankWarriorTick(PlayerbotAI* ai, Player* bot, Unit* target)
     // tab-sunder: start each loose melee mob's threat ledger ONCE — a mob
     // that's already sundered gained nothing from another 15-rage refresh
     if (meleeCount >= 2)
-        for (const ObjectGuid& guid : attackers)
-            if (Unit* attacker = ai->GetUnit(guid))
-                if (attacker != target && attacker->IsAlive() &&
-                    attacker->GetVictim() != bot &&
-                    bot->CanReachWithMeleeAttack(attacker) &&
-                    !IsSoftCrowdControlled(ai, attacker) &&
-                    !ai->GetAura("sunder armor", attacker) &&
-                    Cast(ai, "sunder armor", attacker))
-                    return true;
+        for (Unit* attacker : attackers)
+            if (attacker != target && attacker->IsAlive() &&
+                attacker->GetVictim() != bot &&
+                bot->CanReachWithMeleeAttack(attacker) &&
+                !IsSoftCrowdControlled(ai, attacker) &&
+                !ai->GetAura("sunder armor", attacker) &&
+                Cast(ai, "sunder armor", attacker))
+                return true;
 
 #ifndef MANGOSBOT_ZERO
     // 1.12 thunder clap is battle-stance-only; TBC+ prot uses it tanking

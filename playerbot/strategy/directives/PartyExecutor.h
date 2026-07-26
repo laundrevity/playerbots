@@ -47,7 +47,7 @@ namespace ai
         // gather-blocked|rescue|come|come-done|come-timeout|route-cancel
         static void LogMovementDecision(PlayerbotAI* ai, Player* bot, const char* reason,
                                         const char* detail, Unit* target);
-        // stop an in-flight route spline / point move (steer|hold|fast|come)
+        // stop an in-flight route spline / point move (steer|manual|hold|come)
         static void CancelRouteMovement(Player* bot);
 
     private:
