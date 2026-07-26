@@ -39,6 +39,7 @@ namespace
     struct RouteProgress
     {
         uint32 mapId = 0;
+        uint32 instanceId = 0;
         size_t pathIndex = 0;
         size_t nodeIndex = 0;
     };
@@ -212,10 +213,13 @@ bool DungeonRoutePlanner::NextObjective(Player* tank, DungeonRouteObjective& obj
 
     uint32 counter = tank->GetObjectGuid().GetCounter();
     auto progressItr = s_progress.find(counter);
-    if (progressItr == s_progress.end() || progressItr->second.mapId != tank->GetMapId())
+    if (progressItr == s_progress.end() ||
+        progressItr->second.mapId != tank->GetMapId() ||
+        progressItr->second.instanceId != tank->GetInstanceId())
     {
         RouteProgress progress;
         progress.mapId = tank->GetMapId();
+        progress.instanceId = tank->GetInstanceId();
         float closest = 0.0f;
         for (size_t i = 0; i < route->second.size(); ++i)
         {
@@ -227,9 +231,11 @@ bool DungeonRoutePlanner::NextObjective(Player* tank, DungeonRouteObjective& obj
                 progress.pathIndex = i;
             }
         }
-        progressItr = s_progress.insert(std::make_pair(counter, progress)).first;
-        sLog.outBasic("DungeonRoutePlanner: %s selected path '%s'",
-                      tank->GetName(), route->second[progress.pathIndex].id.c_str());
+        s_progress[counter] = progress;
+        progressItr = s_progress.find(counter);
+        sLog.outBasic("DungeonRoutePlanner: %s selected path '%s' for instance %u",
+                      tank->GetName(), route->second[progress.pathIndex].id.c_str(),
+                      progress.instanceId);
     }
 
     RouteProgress& progress = progressItr->second;

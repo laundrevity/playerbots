@@ -25,6 +25,7 @@
 #include "MotionGenerators/PathFinder.h"
 #include "Movement/MoveSpline.h"
 #include "Movement/MoveSplineInit.h"
+#include "Server/DBCStores.h"
 #include "Util/Timer.h"
 
 #include <cmath>
@@ -53,7 +54,7 @@ namespace
     constexpr float ROUTE_LEASH = 25.0f;   // was 35: tank drifted a room away
                                            // toward gauntlet gate pulling
     constexpr float ROUTE_CHUNK = 80.0f;    // one smooth spline per chunk
-    constexpr float ROUTE_PULL_RANGE = 35.0f;
+    constexpr float ROUTE_PULL_RANGE = 24.0f;
 
     // Pull readiness combines recovery with formation. The tank leads, but
     // does not begin the next engagement until the party is close and visible.
@@ -195,6 +196,76 @@ namespace
                                    go->GetPositionX(), go->GetPositionY(), 4.0f))
                 return true;
         return false;
+    }
+
+    GameObject* FindCrossedDoor(const std::vector<GameObject*>& doors,
+                                float x1, float y1, float x2, float y2)
+    {
+        for (GameObject* go : doors)
+            if (SegmentNearPoint2D(x1, y1, x2, y2,
+                                   go->GetPositionX(), go->GetPositionY(), 4.0f))
+                return go;
+        return nullptr;
+    }
+
+    Player* FindGroupDoorKey(Player* bot, GameObject* door, uint32& keyItem)
+    {
+        keyItem = 0;
+        if (!bot || !door || !door->GetGOInfo())
+            return nullptr;
+        LockEntry const* lock = sLockStore.LookupEntry(door->GetGOInfo()->GetLockId());
+        if (!lock)
+            return nullptr;
+
+        Group* group = bot->GetGroup();
+        for (uint8 i = 0; i < MAX_LOCK_CASE; ++i)
+        {
+            if (lock->Type[i] != LOCK_KEY_ITEM || !lock->Index[i])
+                continue;
+            keyItem = lock->Index[i];
+            if (bot->HasItemCount(keyItem, 1))
+                return bot;
+            if (!group)
+                continue;
+            for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                Player* member = itr->getSource();
+                if (member && member->IsInWorld() &&
+                    member->GetMapId() == bot->GetMapId() &&
+                    member->GetInstanceId() == bot->GetInstanceId() &&
+                    member->HasItemCount(keyItem, 1))
+                    return member;
+            }
+        }
+        keyItem = 0;
+        return nullptr;
+    }
+
+    bool TryOpenRouteDoor(PlayerbotAI* ai, Player* bot, GameObject* door,
+                          const std::string& routeDetail)
+    {
+        uint32 keyItem = 0;
+        Player* keyHolder = FindGroupDoorKey(bot, door, keyItem);
+        if (!keyHolder)
+            return false;
+
+        char detail[192];
+        snprintf(detail, sizeof(detail), "%s door=%u key=%u holder=%s",
+                 routeDetail.c_str(), door->GetEntry(), keyItem, keyHolder->GetName());
+        if (bot->GetDistance(door) > door->GetInteractionDistance() - 0.5f)
+        {
+            float x, y, z;
+            door->GetContactPoint(bot, x, y, z, door->GetInteractionDistance() - 0.75f);
+            bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_RUN);
+            PartyExecutor::LogMovementDecision(ai, bot, "door-approach", detail, nullptr);
+        }
+        else
+        {
+            door->Use(bot);
+            PartyExecutor::LogMovementDecision(ai, bot, "door-open", detail, nullptr);
+        }
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;
     }
 
     bool PathCrossesClosedDoor(Player* bot, float destX, float destY)
@@ -950,8 +1021,14 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     // wait for the human: never advance further than the leash
     if (sServerFacade.GetDistance2d(bot, master) > ROUTE_LEASH)
     {
+        if (!bot->movespline->Finalized() ||
+            bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        {
+            CancelRouteMovement(bot);
+            LogMovementDecision(ai, bot, "route-leash-stop", nullptr, master);
+        }
         ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
-        return true;    // stand ground, don't run back either
+        return true;
     }
 
     Player* blocker = nullptr;
@@ -1064,9 +1141,12 @@ bool PartyExecutor::RouteAdvance(PlayerbotAI* ai, Player* bot)
     }
 
     for (size_t i = 1; i < points.size(); ++i)
-        if (SegmentCrossesDoors(closedDoors, points[i - 1].x, points[i - 1].y,
-                                points[i].x, points[i].y))
+        if (GameObject* door = FindCrossedDoor(closedDoors,
+                                              points[i - 1].x, points[i - 1].y,
+                                              points[i].x, points[i].y))
         {
+            if (TryOpenRouteDoor(ai, bot, door, routeDetail))
+                return true;
             static std::map<uint32, uint32> lastBlockMs;
             uint32 nowMs = WorldTimer::getMSTime();
             uint32& lastBlock = lastBlockMs[bot->GetObjectGuid().GetCounter()];
