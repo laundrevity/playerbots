@@ -104,7 +104,8 @@ namespace
     void LogPullWait(PlayerbotAI* ai, Player* tank, Player* blocker,
                      const char* reason, const char* source)
     {
-        static std::map<uint32, uint32> lastLog;
+        // Diagnostic throttles do not need process-global ordering.
+        static thread_local std::map<uint32, uint32> lastLog;
         uint32 now = WorldTimer::getMSTime();
         uint32& last = lastLog[tank->GetObjectGuid().GetCounter()];
         if (last && WorldTimer::getMSTimeDiff(last, now) < 5000)
@@ -684,7 +685,10 @@ bool PartyExecutor::ShouldOwn(PlayerbotAI* ai, Player* bot)
         // visibility: a missing/unreal master silently demotes a grouped bot
         // to the legacy engine (observed: classic dungeon party idling with
         // zero executor probes — nobody knew the executor wasn't running)
-        static std::map<uint32, uint32> lastLog;
+        // ShouldOwn runs concurrently on the map-worker pool. Keep this
+        // diagnostic throttle per worker to avoid racing std::map mutations
+        // while random bots are logging in.
+        static thread_local std::map<uint32, uint32> lastLog;
         uint32 now = WorldTimer::getMSTime();
         uint32& last = lastLog[bot->GetObjectGuid().GetCounter()];
         if (bot->GetGroup() && (!last || now - last > 60000))

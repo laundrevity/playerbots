@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <vector>
 
 using namespace ai;
@@ -44,6 +45,7 @@ namespace
 
     std::map<uint32, std::vector<RoutePath>> s_routes;
     std::map<uint32, RouteProgress> s_progress;
+    std::mutex s_routeMutex;
     bool s_loaded = false;
 
     bool ReadPoint(const json& point, float& x, float& y, float& z)
@@ -187,6 +189,7 @@ void DungeonRoutePlanner::Load()
 
 bool DungeonRoutePlanner::HasRoute(uint32 mapId)
 {
+    std::lock_guard<std::mutex> lock(s_routeMutex);
     Load();
     auto route = s_routes.find(mapId);
     return route != s_routes.end() && !route->second.empty();
@@ -195,6 +198,7 @@ bool DungeonRoutePlanner::HasRoute(uint32 mapId)
 bool DungeonRoutePlanner::NextObjective(Player* tank, DungeonRouteObjective& objective,
                                         std::string& state)
 {
+    std::lock_guard<std::mutex> lock(s_routeMutex);
     Load();
     if (!tank)
         return false;
@@ -279,12 +283,14 @@ bool DungeonRoutePlanner::NextObjective(Player* tank, DungeonRouteObjective& obj
 
 void DungeonRoutePlanner::Reset(Player* tank)
 {
+    std::lock_guard<std::mutex> lock(s_routeMutex);
     if (tank)
         s_progress.erase(tank->GetObjectGuid().GetCounter());
 }
 
 void DungeonRoutePlanner::Reload()
 {
+    std::lock_guard<std::mutex> lock(s_routeMutex);
     s_routes.clear();
     s_progress.clear();
     s_loaded = false;
