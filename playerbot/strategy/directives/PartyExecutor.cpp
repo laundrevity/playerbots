@@ -166,6 +166,16 @@ namespace
         return ddx * ddx + ddy * ddy <= tolerance * tolerance;
     }
 
+    bool IsDoorClosed(GameObject* door)
+    {
+        if (!door || !door->GetGOInfo())
+            return false;
+        // startOpen INVERTS the state semantics: a permanently-open gateway
+        // idles in GO_STATE_READY.
+        bool startOpen = door->GetGOInfo()->door.startOpen;
+        return (door->GetGoState() == GO_STATE_READY) != startOpen;
+    }
+
     // one grid visit per DECISION, not per candidate (the pull loops call
     // the segment test dozens of times per tick)
     void CollectClosedDoors(Player* bot, std::vector<GameObject*>& out)
@@ -178,12 +188,7 @@ namespace
         {
             if (go->GetGoType() != GAMEOBJECT_TYPE_DOOR)
                 continue;
-            // startOpen INVERTS the state semantics: a permanently-open
-            // gateway idles in GO_STATE_READY — treating READY as closed
-            // unconditionally would wall off open passages
-            bool startOpen = go->GetGOInfo() && go->GetGOInfo()->door.startOpen;
-            bool closed = (go->GetGoState() == GO_STATE_READY) != startOpen;
-            if (closed)
+            if (IsDoorClosed(go))
                 out.push_back(go);
         }
     }
@@ -252,17 +257,43 @@ namespace
         char detail[192];
         snprintf(detail, sizeof(detail), "%s door=%u key=%u holder=%s",
                  routeDetail.c_str(), door->GetEntry(), keyItem, keyHolder->GetName());
-        if (bot->GetDistance(door) > door->GetInteractionDistance() - 0.5f)
+        float interaction = door->GetInteractionDistance();
+        if (bot->GetDistance(door) > interaction - 0.5f)
         {
-            float x, y, z;
-            door->GetContactPoint(bot, x, y, z, door->GetInteractionDistance() - 0.75f);
-            bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_RUN);
+            // Gameobjects do not collide server-side. GetContactPoint picked
+            // the far side of Stratholme's portcullises and the tank walked
+            // through the visibly closed gate before Use could run. Derive
+            // the stand point from the tank's CURRENT side instead.
+            float dx = bot->GetPositionX() - door->GetPositionX();
+            float dy = bot->GetPositionY() - door->GetPositionY();
+            float distance = std::sqrt(dx * dx + dy * dy);
+            float standOff = std::max(1.0f, interaction - 0.75f);
+            if (distance < 0.1f)
+            {
+                dx = -std::cos(bot->GetOrientation());
+                dy = -std::sin(bot->GetOrientation());
+                distance = 1.0f;
+            }
+            float x = door->GetPositionX() + dx / distance * standOff;
+            float y = door->GetPositionY() + dy / distance * standOff;
+            PartyExecutor::CancelRouteMovement(bot);
+            bot->GetMotionMaster()->MovePoint(0, x, y, bot->GetPositionZ(), FORCED_MOVEMENT_RUN);
             PartyExecutor::LogMovementDecision(ai, bot, "door-approach", detail, nullptr);
+        }
+        else if (keyHolder->GetDistance(door) > interaction)
+        {
+            PartyExecutor::CancelRouteMovement(bot);
+            PartyExecutor::LogMovementDecision(ai, bot, "door-key-wait", detail, keyHolder);
         }
         else
         {
-            door->Use(bot);
-            PartyExecutor::LogMovementDecision(ai, bot, "door-open", detail, nullptr);
+            // Preserve lock ownership: the group member who actually carries
+            // the key performs the interaction once both they and the tank
+            // have reached the gate.
+            door->Use(keyHolder);
+            PartyExecutor::LogMovementDecision(
+                ai, bot, IsDoorClosed(door) ? "door-open-failed" : "door-open",
+                detail, keyHolder);
         }
         ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
         return true;
@@ -855,16 +886,80 @@ bool PartyExecutor::TryChargePull(PlayerbotAI* ai, Player* bot)
             return true;
         }
 
-    float distance = sServerFacade.GetDistance2d(bot, target);
-    if (distance < 8.0f || distance > 24.0f)
-        return false;   // charge envelope
     if (PathCrossesClosedDoor(bot, target->GetPositionX(), target->GetPositionY()))
-        return false;   // a charge spline goes straight through closed doors
+    {
+        LogMovementDecision(ai, bot, "door-blocked", "marked", target);
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;   // do not let the configured route override the mark
+    }
 
-    // charge needs battle stance; combat tick flips back to defensive
-    if (!ai->HasAura("battle stance", bot) && Cast(ai, "battle stance", bot))
+    float distance = sServerFacade.GetDistance2d(bot, target);
+    if (distance <= ROUTE_PULL_RANGE)
+        return EngagePull(ai, bot, target);
+
+    Player* master = ai->GetMaster();
+    float masterDistance = master ? sServerFacade.GetDistance2d(bot, master) : ROUTE_LEASH;
+    float advance = std::min(12.0f, ROUTE_LEASH - masterDistance - 1.0f);
+    if (advance < 2.0f)
+    {
+        LogMovementDecision(ai, bot, "formation-wait", "marked:master-leash", master);
+        CancelRouteMovement(bot);
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
         return true;
-    return Cast(ai, "charge", target);
+    }
+
+    PathFinder pathfinder(bot);
+    pathfinder.setPathLengthLimit(ROUTE_CHUNK);
+    pathfinder.calculate(target->GetPositionX(), target->GetPositionY(),
+                         target->GetPositionZ(), false);
+    if (pathfinder.getPathType() & PATHFIND_NOPATH)
+    {
+        LogMovementDecision(ai, bot, "marked-no-path", nullptr, target);
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;
+    }
+
+    const PointsArray& path = pathfinder.getPath();
+    if (path.size() < 2)
+    {
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;
+    }
+
+    PointsArray bounded;
+    bounded.push_back(path.front());
+    float remaining = advance;
+    for (size_t i = 1; i < path.size() && remaining > 0.0f; ++i)
+    {
+        float dx = path[i].x - path[i - 1].x;
+        float dy = path[i].y - path[i - 1].y;
+        float dz = path[i].z - path[i - 1].z;
+        float segment = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (segment <= remaining)
+        {
+            bounded.push_back(path[i]);
+            remaining -= segment;
+            continue;
+        }
+        float ratio = remaining / segment;
+        bounded.push_back(G3D::Vector3(path[i - 1].x + dx * ratio,
+                                       path[i - 1].y + dy * ratio,
+                                       path[i - 1].z + dz * ratio));
+        remaining = 0.0f;
+    }
+    if (bounded.size() < 2)
+    {
+        ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+        return true;
+    }
+
+    Movement::MoveSplineInit init(*bot);
+    init.MovebyPath(bounded);
+    init.SetWalk(false);
+    init.Launch();
+    LogMovementDecision(ai, bot, "marked-approach", nullptr, target);
+    ai->SetAIInternalUpdateDelay(NONCOMBAT_DELAY_MS);
+    return true;
 }
 
 // walk in / charge / body-pull, depending on range
@@ -2459,10 +2554,12 @@ void PartyExecutor::LogMovementDecision(PlayerbotAI* ai, Player* bot, const char
 // steer/manual/hold/come must not fight a launched leg toward the old goal
 void PartyExecutor::CancelRouteMovement(Player* bot)
 {
-    if (!bot->movespline->Finalized())
-        bot->StopMoving();
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
         bot->GetMotionMaster()->Clear();
+    // StopMoving launches a stop spline but does not interrupt the existing
+    // raw MoveSplineInit leg. The leash trace showed the tank continue from
+    // 26 to 57 yards through repeated stop requests.
+    bot->InterruptMoving(true);
 }
 
 // "come to me": deterministic spatial recall. Postconditions, not
